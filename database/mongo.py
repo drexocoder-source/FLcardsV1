@@ -9,6 +9,8 @@ from uuid import uuid4
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from services.economy import CLAIM_RARITY_WEIGHTS, SHOP_PACKS, weighted_player_choice
+
 from .seed import COMPETITIONS, COMPETITION_TEAMS, MODE_ROSTERS
 
 
@@ -21,6 +23,8 @@ class MongoDatabase:
         self.matches = self.db.matches
         self.competitions = self.db.competitions
         self.group_games = self.db.group_games
+        self.shop_purchases = self.db.shop_purchases
+        self.shop_config = self.db.shop_config
 
     async def connect(self) -> None:
         await self.client.admin.command("ping")
@@ -32,6 +36,8 @@ class MongoDatabase:
         await self.db.templates.create_index("template_id", unique=True)
         await self.competitions.create_index("competition_key", unique=True)
         await self.group_games.create_index("chat_id")
+        await self.shop_purchases.create_index("user_id")
+        await self.shop_config.create_index("pack_key", unique=True)
 
     async def close(self) -> None:
         self.client.close()
@@ -46,6 +52,8 @@ class MongoDatabase:
             "challenges": self.db.challenges,
             "templates": self.db.templates,
             "moderators": self.db.admins,
+            "shop_purchases": self.shop_purchases,
+            "shop_config": self.shop_config,
         }
         counts: dict[str, int] = {}
         for name, collection in collections.items():
@@ -175,17 +183,25 @@ class MongoDatabase:
 
     async def add_debut_squad(self, user_id: int) -> list[dict[str, Any]]:
         wanted = ["GK", "DEF", "DEF", "DEF", "DEF", "MID", "MID", "MID", "ATT", "ATT", "ATT"]
+        position_options = {
+            "GK": ["GK"],
+            "DEF": ["DEF", "CB", "LB", "RB", "LWB", "RWB"],
+            "MID": ["MID", "CDM", "CM", "CAM", "LM", "RM"],
+            "ATT": ["ATT", "LW", "RW", "CF", "SS", "ST"],
+        }
         existing = await self.users.find_one({"user_id": user_id}) or {}
         owned = set(existing.get("collection", []))
         selected: list[dict[str, Any]] = []
         for position in wanted:
-            player = await self.players.find_one(
+            candidates = await self.players.find(
                 {
-                    "position": position,
+                    "position": {"$in": position_options[position]},
                     "competition_only": {"$ne": True},
+                    "claimable": {"$ne": False},
                     "player_id": {"$nin": list(owned | {p["player_id"] for p in selected})},
                 }
-            )
+            ).to_list(length=2500)
+            player = weighted_player_choice(candidates, CLAIM_RARITY_WEIGHTS)
             if player:
                 selected.append(player)
 
@@ -207,17 +223,21 @@ class MongoDatabase:
             return None, last_claim + timedelta(hours=12)
 
         owned = user.get("collection", [])
-        pipeline: list[dict[str, Any]] = [
-            {"$match": {"competition_only": {"$ne": True}, "claimable": {"$ne": False}, "player_id": {"$nin": owned}}},
-            {"$sample": {"size": 1}},
-        ]
-        candidate = await self.players.aggregate(pipeline).to_list(length=1)
-        if not candidate:
-            candidate = await self.players.aggregate([{"$sample": {"size": 1}}]).to_list(length=1)
-        if not candidate:
+        candidates = await self.players.find(
+            {
+                "competition_only": {"$ne": True},
+                "claimable": {"$ne": False},
+                "player_id": {"$nin": owned},
+            }
+        ).to_list(length=5000)
+        if not candidates:
+            candidates = await self.players.find(
+                {"competition_only": {"$ne": True}, "claimable": {"$ne": False}}
+            ).to_list(length=5000)
+        player = weighted_player_choice(candidates, CLAIM_RARITY_WEIGHTS)
+        if not player:
             return None, None
 
-        player = candidate[0]
         await self.users.update_one(
             {"user_id": user_id},
             {
@@ -229,6 +249,115 @@ class MongoDatabase:
             },
         )
         return player, None
+
+    async def buy_pack(self, user_id: int, pack_key: str, quantity: int) -> dict[str, Any]:
+        pack_key = pack_key.upper()
+        packs = await self.get_shop_packs()
+        pack = packs.get(pack_key)
+        quantity = int(quantity)
+        if not pack or quantity < 1 or quantity > 3:
+            return {"ok": False, "reason": "That pack quantity is not available."}
+
+        candidates = await self.players.find(
+            {"competition_only": {"$ne": True}, "claimable": {"$ne": False}}
+        ).to_list(length=5000)
+        if not candidates:
+            return {"ok": False, "reason": "No collectible cards are available in the shop yet."}
+
+        total_cost = int(pack["price"]) * quantity
+        debit = await self.users.update_one(
+            {"user_id": user_id, "coins": {"$gte": total_cost}},
+            {"$inc": {"coins": -total_cost}, "$set": {"updated_at": datetime.now(UTC)}},
+        )
+        if debit.modified_count != 1:
+            user = await self.get_user(user_id) or {}
+            return {
+                "ok": False,
+                "reason": f"You need <b>{total_cost:,}</b> coins, but only have <b>{int(user.get('coins', 0)):,}</b>.",
+            }
+
+        drawn = [
+            weighted_player_choice(candidates, pack["drops"])
+            for _ in range(quantity)
+        ]
+        cards = [player for player in drawn if player]
+        user = await self.get_user(user_id) or {}
+        collection = list(user.get("collection", []))
+        new_ids: list[str] = []
+        duplicates: list[dict[str, Any]] = []
+        for player in cards:
+            player_id = player["player_id"]
+            if player_id in collection:
+                duplicates.append(player)
+            else:
+                collection.append(player_id)
+                new_ids.append(player_id)
+        duplicate_credit = sum(max(50, int(player.get("ovr", 50)) * 5) for player in duplicates)
+        await self.users.update_one(
+            {"user_id": user_id},
+            {
+                "$set": {"collection": collection, "updated_at": datetime.now(UTC)},
+                "$inc": {"coins": duplicate_credit},
+            },
+        )
+        receipt_id = uuid4().hex[:12]
+        await self.shop_purchases.insert_one(
+            {
+                "receipt_id": receipt_id,
+                "user_id": user_id,
+                "pack": pack_key,
+                "quantity": quantity,
+                "cost": total_cost,
+                "cards": [player["player_id"] for player in cards],
+                "duplicates": len(duplicates),
+                "duplicate_credit": duplicate_credit,
+                "created_at": datetime.now(UTC),
+            }
+        )
+        updated_user = await self.get_user(user_id) or {}
+        return {
+            "ok": True,
+            "pack": pack,
+            "pack_key": pack_key,
+            "quantity": quantity,
+            "cost": total_cost,
+            "cards": cards,
+            "new_cards": len(new_ids),
+            "duplicates": duplicates,
+            "duplicate_credit": duplicate_credit,
+            "balance": int(updated_user.get("coins", 0)),
+            "receipt_id": receipt_id,
+        }
+
+    async def get_shop_packs(self) -> dict[str, dict[str, Any]]:
+        packs = {
+            key: {**pack, "drops": dict(pack["drops"])}
+            for key, pack in SHOP_PACKS.items()
+        }
+        overrides = await self.shop_config.find({}).to_list(length=100)
+        for override in overrides:
+            pack = packs.get(str(override.get("pack_key", "")).upper())
+            if pack:
+                pack["price"] = max(1, int(override.get("price", pack["price"])))
+        return packs
+
+    async def set_shop_price(self, pack_key: str, price: int, updated_by: int) -> bool:
+        pack_key = pack_key.upper()
+        if pack_key not in SHOP_PACKS or price < 1:
+            return False
+        await self.shop_config.update_one(
+            {"pack_key": pack_key},
+            {
+                "$set": {
+                    "pack_key": pack_key,
+                    "price": int(price),
+                    "updated_by": updated_by,
+                    "updated_at": datetime.now(UTC),
+                }
+            },
+            upsert=True,
+        )
+        return True
 
     async def retain_pending(self, user_id: int) -> dict[str, Any] | None:
         user = await self.users.find_one({"user_id": user_id}) or {}
@@ -294,7 +423,9 @@ class MongoDatabase:
         terms = [aliases.get(term, term) for term in re.findall(r"[a-z0-9À-ÿ]+", normalize(query))]
         if not terms:
             return []
-        players = await self.players.find({}).sort("name", 1).to_list(length=5000)
+        players = await self.players.find(
+            {"competition_only": {"$ne": True}}
+        ).sort("name", 1).to_list(length=5000)
         matches: list[tuple[float, dict[str, Any]]] = []
         for player in players:
             searchable = normalize(" ".join(
@@ -321,10 +452,12 @@ class MongoDatabase:
         return [player for _, player in matches]
 
     async def list_players(self, skip: int = 0, limit: int = 20) -> list[dict[str, Any]]:
-        return await self.players.find({}).sort([("competition_only", 1), ("name", 1)]).skip(skip).limit(limit).to_list(length=limit)
+        return await self.players.find(
+            {"competition_only": {"$ne": True}}
+        ).sort("name", 1).skip(skip).limit(limit).to_list(length=limit)
 
     async def count_players(self) -> int:
-        return await self.players.count_documents({})
+        return await self.players.count_documents({"competition_only": {"$ne": True}})
 
     async def get_bot_stats(self) -> dict[str, int]:
         users = await self.users.find({}, {"collection": 1, "coins": 1, "xp": 1}).to_list(length=100000)

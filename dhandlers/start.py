@@ -7,7 +7,7 @@ from database.mongo import MongoDatabase
 from config import Settings
 from plugins.audit import audit
 
-from .ui import arena_keyboard, back_keyboard, club_keyboard, help_keyboard, info_keyboard, menu_keyboard
+from .ui import arena_keyboard, back_keyboard, club_keyboard, help_keyboard, info_keyboard, menu_keyboard, shop_keyboard, shop_text
 
 WELCOME = """<b>Fʟ | Cᴀʀᴅs 🃏</b>
 
@@ -24,31 +24,18 @@ HELP = """<b>Fʟ | Cᴀʀᴅs 🃏 — Commands</b>
 /debut — Receive a balanced starting XI when player cards exist
 /claim — Claim a random player every 12 hours
 /player Name — Search all added player cards
+/shop — Buy random collectible card packs
 
 <b>Your club</b>
 /collection — Browse all owned cards
 /squad — View your active 25-player squad
 /profile — View coins, glory, XP, and squad rating
 /team — Manage your team name, formation, lineup, and substitutes
-/formation — Choose a formation unlocked by club level
-/teamname — Rename your team
-/subs — Set substitute players
 
 <b>Competitions</b>
 /arena — Open group competitions
-/playcl, /playwc, /playacl — Open owner-created group modes
-Custom modes such as /playcwc work automatically after the owner creates them.
-
-<b>Player imports</b>
-/addplayer — Add one or many pipe-delimited players (admin)
-/players — Browse the added player database (admin)
-/templateguide — View the bulk import template (admin)
-
-<b>Command areas</b>
-• Private chat: club tools, owner/admin tools, templates, and /resetall
-• Group chat: /arena, /playcl, /playwc, custom /play… modes, and /challenge
-
-Owners can use /owner for the complete private owner control list."""
+/playucl, /playcl, /playwc, /playacl — Open seeded group modes
+"""
 
 SUPPORT = """<b>🛟 SUPPORT DESK</b>
 
@@ -65,7 +52,7 @@ DEVELOPER = """<b>🛠 OWNER / DEVELOPER</b>
 Football Legacy Manager keeps player data, card artwork, clubs, and match competitions separate.
 
 • Player cards are stored once and can be reused by multiple systems
-• Every competition and fixed team is owner-created
+• Built-in UCL, World Cup, and ACL teams are seeded automatically; owners can add more competitions and teams
 • A group has one active lobby at a time
 • Challenges use collected squads and live manager controls
 
@@ -96,9 +83,9 @@ def register_start_handlers(bot: Client, database: MongoDatabase, settings: Sett
 
     @bot.on_message(filters.command("help"))
     async def help_handler(_: Client, message: Message) -> None:
-        await message.reply_text(HELP)
+        await message.reply_text(HELP, reply_markup=help_keyboard())
 
-    @bot.on_callback_query(filters.regex(r"^menu:(home|help|arena|support|developer|pvp|club)$"))
+    @bot.on_callback_query(filters.regex(r"^menu:(home|help|arena|support|developer|pvp|club|shop)$"))
     async def menu_handler(_: Client, query: CallbackQuery) -> None:
         await query.answer()
         destination = query.data.split(":", 1)[1]
@@ -114,6 +101,13 @@ def register_start_handlers(bot: Client, database: MongoDatabase, settings: Sett
             await query.message.edit_text(
                 "<b>🔥 ARENA</b>\n\nChoose a group competition. Each opponent below has its own fixed squad.",
                 reply_markup=arena_keyboard(competitions),
+            )
+        elif destination == "shop":
+            user = await database.get_or_create_user(query.from_user)
+            packs = await database.get_shop_packs()
+            await query.message.edit_text(
+                shop_text(int(user.get("coins", 0)), packs),
+                reply_markup=shop_keyboard(packs),
             )
         elif destination == "support":
             await query.message.edit_text(SUPPORT, reply_markup=info_keyboard("menu:home"))

@@ -65,13 +65,12 @@ async def _player_database_page(database: MongoDatabase, page: int, page_size: i
         lines.append("No player cards have been added yet.")
     else:
         for index, player in enumerate(players, page * page_size + 1):
-            mode_badge = " 🏆" if player.get("competition_only") else ""
             lines.append(
                 f"{index}. <b>{html.escape(str(player.get('name', 'Unknown')))}</b>"
                 f" · {html.escape(str(player.get('club', 'Free Agent')))}"
-                f" · {player.get('position', 'MID')} · OVR {player.get('ovr', 0)}{mode_badge}"
+                f" · {player.get('position', 'MID')} · OVR {player.get('ovr', 0)}"
             )
-    lines.extend(["", "🏆 = competition-only roster (never claimable or available in /debut)."])
+    lines.extend(["", "Competition-only mode rosters are hidden from this browser."])
     return "\n".join(lines), page
 
 
@@ -207,12 +206,13 @@ def register_admin_handlers(bot: Client, database: MongoDatabase, settings: Sett
 /botinfo — show bot-wide statistics
 /addplayer · /addplayers — import player cards
 /addtemplate · /templates · /templateguide — manage card art
+/shopprice — edit card pack prices
 /tplayer — add an original-image special card
 /addcompetition · /addteam · /editteam · /deleteteam — manage arena data
 /mods · /addmod · /removemod — manage level 1/2 moderator access
 
 <b>Group player commands</b>
-/arena · /playcl · /playwc · /playacl · /challenge
+/arena · /playucl · /playwc · /playacl · /challenge
 
 Use owner tools in this private chat. Arena and challenge commands belong in groups.""",
         )
@@ -271,7 +271,11 @@ Keep the player database and card artwork separate so new card templates can be 
     async def seed_handler(_: Client, message: Message) -> None:
         if not _owner_private(message, settings):
             return
-        await message.reply_text("Seeding is disabled. Add every player and team explicitly with the owner commands.")
+        await database.seed_mode_catalog()
+        await message.reply_text(
+            "Built-in UCL, World Cup, and ACL modes are configured with five named teams each. "
+            "Use /playucl, /playwc, or /playacl in a group. Add another mode with /addcompetition."
+        )
 
     @bot.on_message(filters.command("players"))
     async def players_handler(_: Client, message: Message) -> None:
@@ -331,6 +335,46 @@ Keep the player database and card artwork separate so new card templates can be 
 ⚔️ Challenges: <b>{stats['challenges']:,}</b> · Active <b>{stats['active_challenges']:,}</b>
 📋 Saved matches: <b>{stats['matches']:,}</b>
 🛡 Moderators: <b>{stats['moderators']:,}</b>""",
+        )
+
+    @bot.on_message(filters.command("shopprice"))
+    async def shop_price_handler(_: Client, message: Message) -> None:
+        if not _owner_private(message, settings):
+            await message.reply_text("This command is owner-only in private chat.")
+            return
+        parts = [part.strip() for part in message.text.partition(" ")[2].split("|") if part.strip()]
+        packs = await database.get_shop_packs()
+        if not parts:
+            prices = "\n".join(
+                f"{pack['emoji']} <b>{key.title()}</b>: <b>{pack['price']:,}</b> coins"
+                for key, pack in packs.items()
+            )
+            await message.reply_text(
+                f"<b>SHOP PRICES</b>\n\n{prices}\n\n"
+                "Edit one with <code>/shopprice COMMON | 1500</code>."
+            )
+            return
+        if len(parts) != 2:
+            await message.reply_text("Use <code>/shopprice RARITY | PRICE</code>.")
+            return
+        pack_key, price_text = parts
+        try:
+            price = int(price_text.replace(",", ""))
+        except ValueError:
+            await message.reply_text("The price must be a whole number greater than zero.")
+            return
+        if pack_key.upper() not in packs or price < 1:
+            await message.reply_text("Choose a valid pack rarity and a price greater than zero.")
+            return
+        await database.set_shop_price(pack_key, price, message.from_user.id)
+        await message.reply_text(
+            f"✅ {pack_key.upper().title()} Pack now costs <b>{price:,}</b> coins per pack.\n"
+            "The new price is saved and appears on the shop buttons."
+        )
+        await audit(
+            bot,
+            settings,
+            f"Shop price updated by owner <code>{message.from_user.id}</code>: {pack_key.upper()} = {price}",
         )
 
     @bot.on_message(filters.command("addplayer"))

@@ -27,6 +27,7 @@ GENERAL_COMMANDS = [
     BotCommand("debut", "Receive your balanced starter squad"),
     BotCommand("claim", "Claim a random player"),
     BotCommand("player", "Search every added player card"),
+    BotCommand("shop", "Open the card shop"),
     BotCommand("collection", "Browse your card collection"),
     BotCommand("squad", "View your active squad"),
     BotCommand("profile", "View your club profile"),
@@ -40,6 +41,7 @@ GENERAL_COMMANDS = [
 GROUP_COMMANDS = GENERAL_COMMANDS + [
     BotCommand("arena", "Open group competitions"),
     BotCommand("playcl", "Choose a Champions League club"),
+    BotCommand("playucl", "Choose a Champions League club"),
     BotCommand("playwc", "Choose a World Cup nation"),
     BotCommand("playacl", "Choose an Asian club"),
     BotCommand("challenge", "Challenge a player in a group"),
@@ -53,6 +55,7 @@ OWNER_COMMANDS = GENERAL_COMMANDS + [
     BotCommand("addplayers", "Bulk import player cards"),
     BotCommand("players", "Browse every player card"),
     BotCommand("botinfo", "Show bot statistics"),
+    BotCommand("shopprice", "Edit card pack prices"),
     BotCommand("addtemplate", "Save a card template"),
     BotCommand("templates", "List saved card templates"),
     BotCommand("templateguide", "View the card template guide"),

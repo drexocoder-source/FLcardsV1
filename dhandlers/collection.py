@@ -15,7 +15,7 @@ from database.mongo import MongoDatabase
 from config import Settings
 from services.cards import render_player_card
 
-from .ui import claim_keyboard
+from .ui import back_keyboard, claim_keyboard, shop_button, shop_keyboard, shop_text
 
 FORMATIONS = {
     "4-3-3": 1,
@@ -47,7 +47,7 @@ def _formation_keyboard(user: dict) -> InlineKeyboardMarkup:
         ]
         for index in range(0, len(formations), 3)
     ]
-    rows.append([InlineKeyboardButton("Main menu", callback_data="menu:home", style=ButtonStyle.PRIMARY)])
+    rows.append([shop_button(), InlineKeyboardButton("Main menu", callback_data="menu:home", style=ButtonStyle.PRIMARY)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -89,11 +89,35 @@ def _player_page_keyboard(token: str, page: int, total: int) -> InlineKeyboardMa
         buttons.append(InlineKeyboardButton("⬅️ Back", callback_data=f"playerpage:{token}:{page - 1}"))
     if page + 1 < total:
         buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"playerpage:{token}:{page + 1}"))
-    return InlineKeyboardMarkup([buttons]) if buttons else None
+    rows = [buttons] if buttons else []
+    rows.append([shop_button(), InlineKeyboardButton("🏠 Club hub", callback_data="menu:home", style=ButtonStyle.PRIMARY)])
+    return InlineKeyboardMarkup(rows)
 
 
 def _player_caption(player: dict, query: str, page: int, total: int) -> str:
     return f"{card_text(player)}\n\n🔎 <b>Search:</b> {html.escape(query)}\n📄 Card <b>{page + 1}/{total}</b>"
+
+
+def _pack_result_text(result: dict) -> str:
+    pack = result["pack"]
+    cards = result.get("cards", [])
+    lines = [
+        f"<b>{pack['emoji']} {pack['name']} opened ×{result['quantity']}</b>",
+        "",
+        *(
+            f"{index}. {player.get('nation', '🌐')} <b>{player['name']}</b> · "
+            f"{player.get('rarity', 'COMMON')} · OVR {player.get('ovr', 0)}"
+            for index, player in enumerate(cards, 1)
+        ),
+        "",
+        f"Spent: <b>{result['cost']:,}</b> coins",
+        f"New cards: <b>{result['new_cards']}</b> · Duplicates: <b>{len(result['duplicates'])}</b>",
+    ]
+    if result["duplicate_credit"]:
+        lines.append(f"Duplicate credit: <b>+{result['duplicate_credit']:,}</b> coins")
+    lines.append(f"Balance: <b>{result['balance']:,}</b> coins")
+    lines.append(f"Receipt: <code>{result['receipt_id']}</code>")
+    return "\n".join(lines)
 
 
 async def collection_text(database: MongoDatabase, user_id: int, squad_only: bool = False) -> str:
@@ -102,8 +126,15 @@ async def collection_text(database: MongoDatabase, user_id: int, squad_only: boo
     if not players:
         return f"<b>{title}</b>\n\nNo cards yet. Use /debut to start your club."
     grouped = {"GK": [], "DEF": [], "MID": [], "ATT": []}
+    position_groups = {
+        "GK": "GK",
+        "DEF": "DEF", "CB": "DEF", "LB": "DEF", "RB": "DEF", "LWB": "DEF", "RWB": "DEF",
+        "MID": "MID", "CDM": "MID", "CM": "MID", "CAM": "MID", "LM": "MID", "RM": "MID",
+        "ATT": "ATT", "LW": "ATT", "RW": "ATT", "CF": "ATT", "SS": "ATT", "ST": "ATT",
+    }
     for player in players:
-        grouped.setdefault(player.get("position", "MID"), []).append(player)
+        position = str(player.get("position", "MID")).upper()
+        grouped.setdefault(position_groups.get(position, "MID"), []).append(player)
     lines = [f"<b>{title}</b>", f"Cards: {len(players)}/{'25' if squad_only else '100'}", ""]
     for position, label in (("GK", "🧤 GOALKEEPERS"), ("DEF", "🛡 DEFENDERS"), ("MID", "🎯 MIDFIELDERS"), ("ATT", "⚡ ATTACKERS")):
         if grouped.get(position):
@@ -210,8 +241,8 @@ def register_collection_handlers(bot: Client, database: MongoDatabase, settings:
         ]
         for player in players:
             lines.append(player_line(player))
-        lines.extend(["", f"Formation: <b>4-3-3</b>", f"Squad OVR: <b>{squad_rating}</b>", "Players added: <b>11/25</b>"])
-        await message.reply_text("\n".join(lines))
+        lines.extend(["", f"Formation: <b>4-3-3</b>", f"Squad OVR: <b>{squad_rating}</b>", f"Players added: <b>{len(players)}/25</b>"])
+        await message.reply_text("\n".join(lines), reply_markup=back_keyboard())
 
     @bot.on_message(filters.command("claim"))
     async def claim_handler(_: Client, message: Message) -> None:
@@ -239,10 +270,52 @@ def register_collection_handlers(bot: Client, database: MongoDatabase, settings:
 Choose what happens to this card:"""
         await _send_card(bot, database, message, player, caption=text, reply_markup=claim_keyboard())
 
+    @bot.on_message(filters.command("shop"))
+    async def shop_handler(_: Client, message: Message) -> None:
+        user = await database.get_or_create_user(message.from_user)
+        packs = await database.get_shop_packs()
+        await message.reply_text(
+            shop_text(int(user.get("coins", 0)), packs),
+            reply_markup=shop_keyboard(packs),
+        )
+
+    @bot.on_callback_query(filters.regex(r"^shop:buy:(COMMON|RARE|EPIC|ELITE|LEGENDARY):([1-3])$"))
+    async def shop_purchase_handler(_: Client, query: CallbackQuery) -> None:
+        _, _, pack_key, quantity_text = query.data.split(":")
+        await database.get_or_create_user(query.from_user)
+        result = await database.buy_pack(query.from_user.id, pack_key, int(quantity_text))
+        if not result.get("ok"):
+            await query.answer("Purchase unavailable.", show_alert=True)
+            user = await database.get_user(query.from_user.id) or {}
+            packs = await database.get_shop_packs()
+            text = shop_text(int(user.get("coins", 0)), packs) + f"\n\n⚠️ {result['reason']}"
+            try:
+                await query.message.edit_text(text, reply_markup=shop_keyboard(packs))
+            except Exception:
+                await query.message.edit_caption(caption=text, reply_markup=shop_keyboard(packs))
+            return
+
+        await query.answer("Pack opened.")
+        packs = await database.get_shop_packs()
+        result_text = _pack_result_text(result)
+        try:
+            await query.message.edit_text(result_text, reply_markup=shop_keyboard(packs))
+        except Exception:
+            await query.message.edit_caption(caption=result_text, reply_markup=shop_keyboard(packs))
+        for index, player in enumerate(result["cards"], 1):
+            await _send_card(
+                bot,
+                database,
+                query.message,
+                player,
+                caption=f"<b>PACK CARD {index}/{result['quantity']}</b>\n\n{card_text(player)}",
+                reply_markup=shop_keyboard(packs),
+            )
+
     @bot.on_message(filters.command("collection"))
     async def collection_handler(_: Client, message: Message) -> None:
         await database.get_or_create_user(message.from_user)
-        await message.reply_text(await collection_text(database, message.from_user.id))
+        await message.reply_text(await collection_text(database, message.from_user.id), reply_markup=back_keyboard())
 
     @bot.on_message(filters.command("player"))
     async def player_handler(_: Client, message: Message) -> None:
@@ -286,6 +359,7 @@ Choose what happens to this card:"""
 ✨ XP: <b>{user.get('xp', 0):,}</b>
 🏟 Squad: <b>{len(players)}/25</b>
 ⭐ Squad OVR: <b>{rating}</b>""",
+            reply_markup=back_keyboard(),
         )
 
     @bot.on_message(filters.command("team"))
