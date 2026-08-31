@@ -72,9 +72,19 @@ def render_player_card(
     white = (255, 255, 255, 255)
     soft = (226, 237, 245, 255)
     wide = canvas_width / canvas_height >= 1.45
-    scale = canvas_width / 1280 if wide else canvas_width / WIDTH
+    scale_x = canvas_width / 1280 if wide else canvas_width / WIDTH
+    scale_y = canvas_height / 640 if wide else canvas_height / HEIGHT
+    scale = min(scale_x, scale_y)
+    coordinates = (layout or {}).get("coordinates", {}) if wide else {}
+
     def point(x: float, y: float) -> tuple[int, int]:
-        return round(x * scale), round(y * scale)
+        return round(x * scale_x), round(y * scale_y)
+
+    def layout_point(name: str, default: tuple[int, int]) -> tuple[int, int]:
+        value = coordinates.get(name)
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            return point(float(value[0]), float(value[1]))
+        return default
 
     title_font = _font(round((34 if wide else 48) * scale), True)
     name_font = _font(round((34 if wide else 42) * scale), True)
@@ -82,25 +92,27 @@ def render_player_card(
     small_font = _font(round((18 if wide else 22) * scale))
     rating_font = _font(round((66 if wide else 78) * scale), True)
 
-    coordinates = (layout or {}).get("coordinates", {}) if wide else {}
-    rating_xy = tuple(coordinates.get("rating", point(54, 42) if wide else point(72, 68)))
-    position_xy = tuple(coordinates.get("position", point(54, 122) if wide else point(72, 68)))
-    nation_xy = tuple(coordinates.get("nation", point(54, 176) if wide else point(72, 150)))
-    rarity_xy = tuple(coordinates.get("rarity", point(canvas_width / scale - 265, 84)))
-    identity_xy = tuple(coordinates.get("identity", point(canvas_width / scale / 2, 645)))
-    club_xy = tuple(coordinates.get("club", point(canvas_width / scale / 2, 690)))
+    rating_xy = layout_point("rating", point(54, 42) if wide else point(72, 68))
+    position_xy = layout_point("position", point(54, 122) if wide else point(72, 68))
+    nation_xy = layout_point("nation", point(54, 176) if wide else point(72, 150))
+    rarity_xy = layout_point("rarity", point(1015, 56) if wide else point(WIDTH - 180, 84))
+    identity_xy = layout_point("identity", point(650, 506) if wide else point(WIDTH / 2, 645))
+    club_xy = layout_point("club", point(650, 550) if wide else point(WIDTH / 2, 690))
 
     draw.text(position_xy, str(player.get("position", "MID")), fill=white, font=title_font)
     draw.text(rarity_xy, rarity, fill=soft, font=small_font)
     rating_position = rating_xy if wide else point(WIDTH - 170, 62)
     draw.text(rating_position, str(player.get("ovr", 0)), fill=white, font=rating_font)
     draw.text(nation_xy, str(player.get("nation", "🌐")), fill=white, font=_font(round((28 if wide else 34) * scale)))
-    club_top = point(54, 176) if wide else point(72, 205)
+    club_top = layout_point("club_top", point(54, 220) if wide else point(72, 205))
     draw.text(club_top, str(player.get("club", "Free Agent")), fill=soft, font=small_font)
 
     if wide:
-        portrait_box = tuple(coordinates.get("portrait", (370, 88, 930, 472)))
-        portrait_box = tuple(round(value * scale) for value in portrait_box)
+        portrait_values = coordinates.get("portrait", (370, 88, 930, 472))
+        portrait_box = (
+            *point(float(portrait_values[0]), float(portrait_values[1])),
+            *point(float(portrait_values[2]), float(portrait_values[3])),
+        )
         draw.rounded_rectangle(portrait_box, radius=round(24 * scale), fill=(0, 0, 0, 48), outline=soft, width=max(1, round(2 * scale)))
         draw.text(point(650, 280), "FOOTBALL", fill=(255, 255, 255, 120), font=_font(round(28 * scale), True), anchor="mm")
         draw.text(point(650, 325), "LEGACY", fill=(255, 255, 255, 90), font=_font(round(22 * scale), True), anchor="mm")
@@ -131,8 +143,9 @@ def render_player_card(
         else:
             x = 90 + (index % 3) * 215
             y = 760 + (index // 3) * 68
-        draw.text((x, y), label, fill=soft, font=small_font)
-        draw.text((x + round(56 * scale), y - round(4 * scale)), str(value), fill=white, font=stat_font)
+        draw.text(point(x, y), label, fill=soft, font=small_font)
+        value_x, value_y = point(x, y)
+        draw.text((value_x + round(56 * scale), value_y - round(4 * scale)), str(value), fill=white, font=stat_font)
 
     if template_path and Path(template_path).exists():
         image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")

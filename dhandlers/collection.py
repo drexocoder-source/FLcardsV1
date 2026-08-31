@@ -140,7 +140,15 @@ async def team_text(database: MongoDatabase, user_id: int) -> str:
 
 async def _render_card(bot: Client, database: MongoDatabase, player: dict) -> str:
     template_path = None
-    template = await database.get_template(player.get("rarity"), player.get("position"))
+    template = None
+    template_positions = [
+        *[str(position).upper() for position in player.get("secondary_positions", [])],
+        str(player.get("position", "MID")).upper(),
+    ]
+    for template_position in template_positions:
+        template = await database.get_template(player.get("rarity"), template_position)
+        if template:
+            break
     if template and template.get("image_file_id"):
         try:
             template_path = await bot.download_media(

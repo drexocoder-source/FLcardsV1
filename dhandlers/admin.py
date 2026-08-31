@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import re
 from uuid import uuid4
 
 from pyrogram import Client, filters
-from pyrogram.enums import ChatType
-from pyrogram.types import Message
+from pyrogram.enums import ButtonStyle, ChatType
+from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from config import Settings
 from database.mongo import MongoDatabase
@@ -16,6 +17,16 @@ from plugins.audit import audit
 
 async def _is_admin(user_id: int, database: MongoDatabase, settings: Settings) -> bool:
     return user_id in settings.owner_ids or await database.is_mod(user_id)
+
+
+async def _permission_level(user_id: int, database: MongoDatabase, settings: Settings) -> int:
+    if user_id in settings.owner_ids:
+        return 3
+    return await database.mod_level(user_id)
+
+
+async def _has_level(user_id: int, database: MongoDatabase, settings: Settings, required: int) -> bool:
+    return await _permission_level(user_id, database, settings) >= required
 
 
 def _is_owner(user_id: int, settings: Settings) -> bool:
@@ -29,6 +40,39 @@ def _is_private(message: Message) -> bool:
 
 def _owner_private(message: Message, settings: Settings) -> bool:
     return _is_private(message) and _is_owner(message.from_user.id, settings)
+
+
+def _admin_page_keyboard(page: int, total: int, page_size: int) -> InlineKeyboardMarkup | None:
+    buttons = []
+    if page > 0:
+        buttons.append(InlineKeyboardButton("⬅️ Back", callback_data=f"adminplayers:{page - 1}", style=ButtonStyle.PRIMARY))
+    if (page + 1) * page_size < total:
+        buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"adminplayers:{page + 1}", style=ButtonStyle.PRIMARY))
+    return InlineKeyboardMarkup([buttons]) if buttons else None
+
+
+async def _player_database_page(database: MongoDatabase, page: int, page_size: int = 12) -> tuple[str, int]:
+    total = await database.count_players()
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = max(0, min(page, pages - 1))
+    players = await database.list_players(skip=page * page_size, limit=page_size)
+    lines = [
+        "<b>PLAYER DATABASE</b>",
+        f"Cards: <b>{total}</b> · Page <b>{page + 1}/{pages}</b>",
+        "",
+    ]
+    if not players:
+        lines.append("No player cards have been added yet.")
+    else:
+        for index, player in enumerate(players, page * page_size + 1):
+            mode_badge = " 🏆" if player.get("competition_only") else ""
+            lines.append(
+                f"{index}. <b>{html.escape(str(player.get('name', 'Unknown')))}</b>"
+                f" · {html.escape(str(player.get('club', 'Free Agent')))}"
+                f" · {player.get('position', 'MID')} · OVR {player.get('ovr', 0)}{mode_badge}"
+            )
+    lines.extend(["", "🏆 = competition-only roster (never claimable or available in /debut)."])
+    return "\n".join(lines), page
 
 
 def _player_from_parts(parts: list[str]) -> dict:
@@ -159,12 +203,13 @@ def register_admin_handlers(bot: Client, database: MongoDatabase, settings: Sett
 
 <b>Private owner commands</b>
 /resetall CONFIRM — permanently clear the bot database
-/players — count player cards
+/players — browse every player card
+/botinfo — show bot-wide statistics
 /addplayer · /addplayers — import player cards
 /addtemplate · /templates · /templateguide — manage card art
 /tplayer — add an original-image special card
 /addcompetition · /addteam · /editteam · /deleteteam — manage arena data
-/mods · /addmod · /removemod — manage moderator access
+/mods · /addmod · /removemod — manage level 1/2 moderator access
 
 <b>Group player commands</b>
 /arena · /playcl · /playwc · /playacl · /challenge
@@ -199,25 +244,25 @@ Use owner tools in this private chat. Arena and challenge commands belong in gro
         if not _is_private(message):
             await message.reply_text("Admin controls are available only in private chat.")
             return
-        if not await _is_admin(message.from_user.id, database, settings):
+        if not await _has_level(message.from_user.id, database, settings, 1):
             await message.reply_text("This command is for club administrators.")
             return
         await message.reply_text(
             """<b>ADMIN CONTROL ROOM</b>
 
-<b>Player database</b>
+<b>Level 1 · Player database</b>
 /players
 /addplayer · /addplayers
 
-<b>Card templates</b>
+<b>Level 2 · Templates and arena data</b>
 /addtemplate · /templates · /templateguide
-
-<b>Competitions and teams</b>
 /addcompetition · /addteam · /editteam · /deleteteam
-/tplayer (owner-only photo card)
 
 <b>Access controls</b>
-/mods · /addmod · /removemod
+/mods (owner and moderators)
+
+<b>Owner-only</b>
+/addmod · /removemod · /resetall · /tplayer · /botinfo
 
 Keep the player database and card artwork separate so new card templates can be added safely later.""",
         )
@@ -230,14 +275,67 @@ Keep the player database and card artwork separate so new card templates can be 
 
     @bot.on_message(filters.command("players"))
     async def players_handler(_: Client, message: Message) -> None:
-        if not _is_private(message) or not await _is_admin(message.from_user.id, database, settings):
+        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 1):
             return
-        total = await database.players.count_documents({})
-        await message.reply_text(f"<b>PLAYER DATABASE</b>\n\nCards available: <b>{total}</b>")
+        raw_page = message.text.partition(" ")[2].strip()
+        try:
+            requested_page = max(0, int(raw_page) - 1) if raw_page else 0
+        except ValueError:
+            requested_page = 0
+        text, page = await _player_database_page(database, requested_page)
+        await message.reply_text(text, reply_markup=_admin_page_keyboard(page, await database.count_players(), 12))
+
+    @bot.on_callback_query(filters.regex(r"^adminplayers:[0-9]+$"))
+    async def player_database_page_handler(_: Client, query: CallbackQuery) -> None:
+        if not _is_private(query.message) or not await _has_level(query.from_user.id, database, settings, 1):
+            await query.answer("Administrator access required.", show_alert=True)
+            return
+        try:
+            requested_page = int(query.data.split(":", 1)[1])
+        except ValueError:
+            await query.answer("That page is no longer available.", show_alert=True)
+            return
+        text, page = await _player_database_page(database, requested_page)
+        await query.answer()
+        await query.message.edit_text(
+            text,
+            reply_markup=_admin_page_keyboard(page, await database.count_players(), 12),
+        )
+
+    @bot.on_message(filters.command("botinfo"))
+    async def bot_info_handler(_: Client, message: Message) -> None:
+        if not _owner_private(message, settings):
+            await message.reply_text("This command is owner-only in private chat.")
+            return
+        stats = await database.get_bot_stats()
+        await message.reply_text(
+            f"""<b>📊 BOT INFORMATION</b>
+
+<b>Community</b>
+👥 Total users: <b>{stats['users']:,}</b>
+⚽ Clubs with a squad: <b>{stats['users_with_squads']:,}</b>
+🃏 Collected cards: <b>{stats['collected_cards']:,}</b>
+🪙 Coins in circulation: <b>{stats['coins']:,}</b>
+✨ XP earned: <b>{stats['xp']:,}</b>
+
+<b>Card database</b>
+🎴 Total cards: <b>{stats['players']:,}</b>
+✅ Claimable cards: <b>{stats['collectible_players']:,}</b>
+🏆 Competition-only cards: <b>{stats['competition_players']:,}</b>
+🎨 Templates: <b>{stats['templates']:,}</b>
+
+<b>Arena and access</b>
+🏟 Competitions: <b>{stats['competitions']:,}</b>
+⚽ Teams: <b>{stats['teams']:,}</b>
+🎮 Group games: <b>{stats['group_games']:,}</b> · Active <b>{stats['active_group_games']:,}</b>
+⚔️ Challenges: <b>{stats['challenges']:,}</b> · Active <b>{stats['active_challenges']:,}</b>
+📋 Saved matches: <b>{stats['matches']:,}</b>
+🛡 Moderators: <b>{stats['moderators']:,}</b>""",
+        )
 
     @bot.on_message(filters.command("addplayer"))
     async def add_player_handler(_: Client, message: Message) -> None:
-        if not _is_private(message) or not await _is_admin(message.from_user.id, database, settings):
+        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 1):
             await message.reply_text("This command is for club administrators.")
             return
         raw = message.text.partition(" ")[2].strip()
@@ -245,14 +343,15 @@ Keep the player database and card artwork separate so new card templates can be 
 
     @bot.on_message(filters.command("addplayers"))
     async def add_players_handler(_: Client, message: Message) -> None:
-        if not _is_private(message) or not await _is_admin(message.from_user.id, database, settings):
+        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 1):
             return
         source = message.reply_to_message.text or message.reply_to_message.caption if message.reply_to_message else message.text.partition(" ")[2]
         await _bulk_import(bot, database, settings, message, source or "")
 
     @bot.on_message(filters.command("addcompetition"))
     async def add_competition_handler(_: Client, message: Message) -> None:
-        if not _owner_private(message, settings):
+        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 2):
+            await message.reply_text("Level 2 moderator or owner access is required for competitions.")
             return
         parts = [part.strip() for part in message.text.partition(" ")[2].split("|")]
         if len(parts) != 4:
@@ -282,7 +381,8 @@ Keep the player database and card artwork separate so new card templates can be 
 
     @bot.on_message(filters.command("addteam"))
     async def add_team_handler(_: Client, message: Message) -> None:
-        if not _owner_private(message, settings):
+        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 2):
+            await message.reply_text("Level 2 moderator or owner access is required for competition teams.")
             return
         parts = [part.strip() for part in message.text.partition(" ")[2].split("|")]
         if len(parts) not in {4, 5, 6}:
@@ -321,7 +421,8 @@ Keep the player database and card artwork separate so new card templates can be 
 
     @bot.on_message(filters.command("editteam"))
     async def edit_team_handler(_: Client, message: Message) -> None:
-        if not _owner_private(message, settings):
+        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 2):
+            await message.reply_text("Level 2 moderator or owner access is required for competition teams.")
             return
         parts = [part.strip() for part in message.text.partition(" ")[2].split("|")]
         if len(parts) < 3:
@@ -345,7 +446,8 @@ Keep the player database and card artwork separate so new card templates can be 
 
     @bot.on_message(filters.command("deleteteam"))
     async def delete_team_handler(_: Client, message: Message) -> None:
-        if not _owner_private(message, settings):
+        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 2):
+            await message.reply_text("Level 2 moderator or owner access is required for competition teams.")
             return
         parts = [part.strip() for part in message.text.partition(" ")[2].split("|")]
         if len(parts) != 2:
@@ -395,15 +497,27 @@ Keep the player database and card artwork separate so new card templates can be 
             await message.reply_text("Only the owner can change moderator access.")
             return
         target = message.reply_to_message.from_user if message.reply_to_message else None
-        raw_id = message.text.partition(" ")[2].strip()
+        raw_parts = message.text.partition(" ")[2].strip().split()
         try:
-            target_id = target.id if target else int(raw_id)
-        except ValueError:
+            target_id = target.id if target else int(raw_parts[0])
+        except (ValueError, IndexError):
             await message.reply_text("Reply to a user or provide a numeric Telegram user ID.")
             return
-        await database.add_mod(target_id, message.from_user.id)
-        await message.reply_text(f"Moderator access granted to <code>{target_id}</code>.")
-        await audit(bot, settings, f"Moderator added: <code>{target_id}</code> by owner <code>{message.from_user.id}</code>")
+        try:
+            level = int(raw_parts[1]) if len(raw_parts) > 1 else 1
+        except ValueError:
+            level = 0
+        if level not in {1, 2}:
+            await message.reply_text(
+                "<b>Moderator levels</b>\n\n"
+                "Level 1: browse and add player cards.\n"
+                "Level 2: level 1 plus templates and competition management.\n\n"
+                "Use <code>/addmod USER_ID 1</code> or <code>/addmod USER_ID 2</code>."
+            )
+            return
+        await database.add_mod(target_id, message.from_user.id, level)
+        await message.reply_text(f"Level <b>{level}</b> moderator access granted to <code>{target_id}</code>.")
+        await audit(bot, settings, f"Level {level} moderator added: <code>{target_id}</code> by owner <code>{message.from_user.id}</code>")
 
     @bot.on_message(filters.command("removemod"))
     async def remove_mod_handler(_: Client, message: Message) -> None:
@@ -422,33 +536,38 @@ Keep the player database and card artwork separate so new card templates can be 
 
     @bot.on_message(filters.command("mods"))
     async def mods_handler(_: Client, message: Message) -> None:
-        if not _is_private(message) or not await _is_admin(message.from_user.id, database, settings):
+        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 1):
             return
         mods = await database.db.admins.find().sort("user_id", 1).to_list(length=100)
         lines = ["<b>MODERATORS</b>", f"Owner IDs: {', '.join(str(item) for item in settings.owner_ids)}"]
-        lines.extend(f"• <code>{mod['user_id']}</code>" for mod in mods)
+        lines.extend(f"• <code>{mod['user_id']}</code> · Level <b>{mod.get('level', 1)}</b>" for mod in mods)
         await message.reply_text("\n".join(lines))
 
     @bot.on_message(filters.command("templateguide"))
     async def template_guide_handler(_: Client, message: Message) -> None:
-        if not _is_private(message) or not await _is_admin(message.from_user.id, database, settings):
+        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 1):
             return
         await message.reply_text(
             """<b>CARD TEMPLATE GUIDE</b>
 
-<b>Widescreen designer · 2:1 · 1280 × 640</b>
-The supplied red/black stadium artwork is a good direction. Keep the background dark where text sits and leave the portrait area transparent or low contrast.
+<b>Widescreen designer · 16:9 or 2:1</b>
+The supplied red/black goalkeeper artwork is the reference style. Keep the background dark where text sits and leave the portrait area transparent or low contrast. The renderer keeps the uploaded image aspect ratio.
+
+<b>Positions to add</b>
+Use one template for each card position when the artwork changes by role:
+<code>GK, CB, LB, RB, LWB, RWB, CDM, CM, CAM, LM, RM, LW, RW, CF, ST, SS</code>
+You can also save <code>DEF</code>, <code>MID</code>, <code>ATT</code>, or <code>ALL</code> as a fallback template.
 
 <b>GK layout coordinates (x, y)</b>
 • OVR: (54, 42) · Position: (54, 122)
-• Nation/club: (54, 176) · Rarity: (1070, 56)
+• Nation: (54, 176) · Club: (54, 220) · Rarity: (1070, 56)
 • Portrait: (370, 88) → (930, 472)
 • Player name: center (650, 506)
 • Club/edition: center (650, 550)
 • PAC / SHO / PAS: (54, 590), (214, 590), (374, 590)
 • DRI / DEF / PHY: (760, 590), (920, 590), (1080, 590)
 
-For CB, use the same 2:1 canvas: move the portrait to (330, 88) → (890, 472), keep the identity at center (640, 506), and use DEF as the visual emphasis. For MID, keep the portrait center and reserve the right side for PAS/DRI. For ATT, reserve the right side for SHO/PAC.
+For CB, LB, and RB, use the same canvas and portrait zone, with DEF as the visual emphasis. For CDM, CM, and CAM, keep the portrait center and reserve the right side for PAS/DRI. For LW, RW, CF, and ST, reserve the right side for SHO/PAC. GK uses the attached goalkeeper layout.
 
 <b>Safe zones</b>
 Keep all text inside x=40..1240 and y=35..615. Use a 16:9 or 2:1 export consistently; this bot preserves a widescreen template's aspect ratio.
@@ -470,8 +589,8 @@ Example:
 
     @bot.on_message(filters.command("addtemplate"))
     async def add_template_handler(_: Client, message: Message) -> None:
-        if not _owner_private(message, settings):
-            await message.reply_text("Only the owner can add the default card templates.")
+        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 2):
+            await message.reply_text("Level 2 moderator or owner access is required to add templates.")
             return
         reply = message.reply_to_message
         if not reply or not reply.photo:
@@ -484,13 +603,15 @@ Example:
             await message.reply_text("Use <code>/addtemplate ID | POSITION | RARITY | VERSION</code>.")
             return
         is_widescreen = "wide" in parts[3].lower() or "2:1" in parts[3] or "16:9" in parts[3]
+        source_width = int(getattr(reply.photo, "width", 1280) or 1280)
+        source_height = int(getattr(reply.photo, "height", 640) or 640)
         template = {
             "template_id": parts[0],
             "position": parts[1].upper(),
             "rarity": parts[2].upper(),
             "version": parts[3],
-            "aspect_ratio": "2:1" if is_widescreen else "3:4",
-            "canvas": {"width": 1280, "height": 640} if is_widescreen else {"width": 720, "height": 960},
+            "aspect_ratio": f"{source_width}:{source_height}" if is_widescreen else "3:4",
+            "canvas": {"width": source_width, "height": source_height} if is_widescreen else {"width": 720, "height": 960},
             "image_file_id": reply.photo.file_id,
             "layout": {
                 "rating": "top-left",
@@ -503,6 +624,7 @@ Example:
                     "rating": [54, 42],
                     "position": [54, 122],
                     "nation": [54, 176],
+                    "club_top": [54, 220],
                     "rarity": [1070, 56],
                     "portrait": [370, 88, 930, 472],
                     "identity": [650, 506],
@@ -518,7 +640,7 @@ Example:
 
     @bot.on_message(filters.command("templates"))
     async def templates_handler(_: Client, message: Message) -> None:
-        if not await _is_admin(message.from_user.id, database, settings):
+        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 1):
             return
         templates = await database.db.templates.find().sort("template_id", 1).to_list(length=100)
         if not templates:

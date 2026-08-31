@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from difflib import SequenceMatcher
 import re
 from typing import Any
+import unicodedata
 from uuid import uuid4
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from .seed import COMPETITIONS, COMPETITION_TEAMS
+from .seed import COMPETITIONS, COMPETITION_TEAMS, MODE_ROSTERS
 
 
 class MongoDatabase:
@@ -52,7 +54,6 @@ class MongoDatabase:
         return counts
 
     async def seed_mode_catalog(self) -> None:
-        positions = ["GK", "DEF", "DEF", "DEF", "DEF", "MID", "MID", "MID", "ATT", "ATT", "ATT"]
         for competition_key, (competition_emoji, competition_name, short_name) in COMPETITIONS.items():
             await self.add_competition(
                 {
@@ -65,28 +66,38 @@ class MongoDatabase:
                 }
             )
             for team_key, (team_emoji, team_name, rating) in list(COMPETITION_TEAMS[competition_key].items())[:5]:
+                roster = MODE_ROSTERS.get(competition_key, {}).get(team_key, [])
+                if not roster:
+                    roster = [
+                        (f"{team_name} Goalkeeper", "GK"),
+                        *[(f"{team_name} Defender {index}", "DEF") for index in range(1, 4)],
+                        *[(f"{team_name} Midfielder {index}", "MID") for index in range(1, 4)],
+                        *[(f"{team_name} Attacker {index}", "ATT") for index in range(1, 5)],
+                    ]
                 player_ids = []
-                for index, position in enumerate(positions, 1):
+                for index, (player_name, position) in enumerate(roster, 1):
                     player_id = f"mode-{competition_key}-{team_key}-{index}"
                     player_ids.append(player_id)
+                    position_bonus = {"GK": 1, "DEF": 2, "MID": 4, "ATT": 5}.get(position, 0)
+                    player_ovr = max(60, min(99, rating + position_bonus - ((index + 1) % 3)))
                     await self.players.update_one(
                         {"player_id": player_id},
                         {
                             "$set": {
                                 "player_id": player_id,
-                                "name": f"{team_name} {position} {index}",
+                                "name": player_name,
                                 "nation": team_emoji if competition_key == "playwc" else "🌐",
                                 "club": team_name,
                                 "position": position,
                                 "secondary_positions": [],
                                 "rarity": "COMPETITION",
-                                "ovr": max(60, min(99, rating + (2 if position == "ATT" else 0))),
-                                "pace": rating,
-                                "shooting": rating if position == "ATT" else max(25, rating - 20),
-                                "passing": rating,
-                                "dribbling": rating,
-                                "defending": rating if position in {"GK", "DEF"} else max(25, rating - 15),
-                                "physical": rating,
+                                "ovr": player_ovr,
+                                "pace": max(40, min(99, rating + (8 if position == "ATT" else 2) - index % 4)),
+                                "shooting": max(25, min(99, rating + (10 if position == "ATT" else -18) - index % 3)),
+                                "passing": max(35, min(99, rating + (7 if position == "MID" else 0) - index % 4)),
+                                "dribbling": max(30, min(99, rating + (8 if position in {"MID", "ATT"} else -4) - index % 3)),
+                                "defending": max(25, min(99, rating + (7 if position in {"GK", "DEF"} else -15) - index % 4)),
+                                "physical": max(40, min(99, rating + 3 - index % 3)),
                                 "preferred_foot": "Right",
                                 "weak_foot": 3,
                                 "skill_moves": 3,
@@ -95,6 +106,7 @@ class MongoDatabase:
                                 "competition_only": True,
                                 "claimable": False,
                                 "starter_eligible": False,
+                                "source": "built-in-mode-roster",
                                 "updated_at": datetime.now(UTC),
                             },
                             "$setOnInsert": {"created_at": datetime.now(UTC)},
@@ -269,17 +281,23 @@ class MongoDatabase:
         aliases = {
             "cr7": "ronaldo",
             "cristiano": "ronaldo",
+            "crition": "cristiano",
+            "cristiano-ronaldo": "ronaldo",
             "lm10": "messi",
             "leo": "messi",
             "kdb": "de bruyne",
         }
-        terms = [aliases.get(term, term) for term in re.findall(r"[a-z0-9À-ÿ]+", query.casefold())]
+        def normalize(value: str) -> str:
+            decomposed = unicodedata.normalize("NFKD", value.casefold())
+            return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+        terms = [aliases.get(term, term) for term in re.findall(r"[a-z0-9À-ÿ]+", normalize(query))]
         if not terms:
             return []
         players = await self.players.find({}).sort("name", 1).to_list(length=5000)
-        matches = []
+        matches: list[tuple[float, dict[str, Any]]] = []
         for player in players:
-            searchable = " ".join(
+            searchable = normalize(" ".join(
                 [
                     str(player.get("name", "")),
                     str(player.get("club", "")),
@@ -287,10 +305,20 @@ class MongoDatabase:
                     str(player.get("position", "")),
                     " ".join(player.get("secondary_positions", [])),
                 ]
-            ).casefold()
-            if all(term in searchable for term in terms):
-                matches.append(player)
-        return matches
+            ))
+            searchable_tokens = re.findall(r"[a-z0-9]+", searchable)
+            scores: list[float] = []
+            for term in terms:
+                if term in searchable:
+                    scores.append(1.0)
+                    continue
+                scores.append(max((SequenceMatcher(None, term, token).ratio() for token in searchable_tokens), default=0.0))
+            if all(score >= 0.58 for score in scores):
+                name = normalize(str(player.get("name", "")))
+                exact_name_bonus = 0.25 if normalize(" ".join(terms)) in name else 0
+                matches.append((sum(scores) / len(scores) + exact_name_bonus, player))
+        matches.sort(key=lambda item: (-item[0], normalize(str(item[1].get("name", "")))))
+        return [player for _, player in matches]
 
     async def list_players(self, skip: int = 0, limit: int = 20) -> list[dict[str, Any]]:
         return await self.players.find({}).sort([("competition_only", 1), ("name", 1)]).skip(skip).limit(limit).to_list(length=limit)
@@ -303,6 +331,7 @@ class MongoDatabase:
         competitions = await self.competitions.find({}, {"teams": 1}).to_list(length=100)
         return {
             "users": len(users),
+            "users_with_squads": await self.users.count_documents({"squad.0": {"$exists": True}}),
             "players": await self.players.count_documents({}),
             "competition_players": await self.players.count_documents({"competition_only": True}),
             "collectible_players": await self.players.count_documents({"competition_only": {"$ne": True}}),
@@ -313,6 +342,9 @@ class MongoDatabase:
             "teams": sum(len(item.get("teams", [])) for item in competitions),
             "templates": await self.db.templates.count_documents({}),
             "moderators": await self.db.admins.count_documents({}),
+            "matches": await self.matches.count_documents({}),
+            "group_games": await self.group_games.count_documents({}),
+            "challenges": await self.db.challenges.count_documents({}),
             "active_group_games": await self.group_games.count_documents({"status": {"$in": ["lobby", "setup", "live"]}}),
             "active_challenges": await self.db.challenges.count_documents({"status": {"$in": ["pending", "setup", "live"]}}),
         }
@@ -372,6 +404,10 @@ class MongoDatabase:
     async def is_mod(self, user_id: int) -> bool:
         return bool(await self.db.admins.find_one({"user_id": user_id}))
 
+    async def mod_level(self, user_id: int) -> int:
+        moderator = await self.get_mod(user_id)
+        return max(0, min(2, int((moderator or {}).get("level", 1)))) if moderator else 0
+
     async def save_template(self, template: dict[str, Any]) -> None:
         await self.db.templates.update_one(
             {"template_id": template["template_id"]},
@@ -384,17 +420,27 @@ class MongoDatabase:
         rarity: str | None = None,
         position: str | None = None,
     ) -> dict[str, Any] | None:
-        query: dict[str, Any] = {}
+        position = position.upper() if position else None
+        rarity = rarity.upper() if rarity else None
+        groups = {
+            "GK": "GK",
+            "CB": "DEF", "LB": "DEF", "RB": "DEF", "LWB": "DEF", "RWB": "DEF", "DEF": "DEF",
+            "CDM": "MID", "CM": "MID", "CAM": "MID", "LM": "MID", "RM": "MID", "MID": "MID",
+            "LW": "ATT", "RW": "ATT", "CF": "ATT", "ST": "ATT", "SS": "ATT", "ATT": "ATT",
+        }
+        positions = [item for item in (position, groups.get(position or "")) if item]
+        if not positions:
+            positions = ["ALL"]
+        for candidate_position in positions + ["ALL"]:
+            query: dict[str, Any] = {"position": candidate_position}
+            if rarity:
+                query["rarity"] = rarity
+            template = await self.db.templates.find_one(query, sort=[("created_at", -1)])
+            if template:
+                return template
         if rarity:
-            query["rarity"] = rarity.upper()
-        if position:
-            query["position"] = position.upper()
-        if position and rarity:
-            exact = await self.db.templates.find_one(query, sort=[("created_at", -1)])
-            if exact:
-                return exact
-            query.pop("position")
-        return await self.db.templates.find_one(query, sort=[("created_at", -1)])
+            return await self.db.templates.find_one({"rarity": rarity}, sort=[("created_at", -1)])
+        return await self.db.templates.find_one({}, sort=[("created_at", -1)])
 
     async def list_competitions(self) -> list[dict[str, Any]]:
         return await self.competitions.find({}).sort("created_at", 1).to_list(length=100)

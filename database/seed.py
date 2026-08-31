@@ -347,3 +347,105 @@ COMPETITION_TEAMS = {
         "gwangju": ("🟠", "Gwangju FC", 73),
     },
 }
+
+# A small, named launch catalogue for the three built-in game modes. These
+# players are competition opponents only; MongoDatabase marks them as
+# non-claimable when it materializes the catalogue.
+MODE_ROSTERS = {
+    "playcl": {
+        "madrid": [
+            ("Thibaut Courtois", "GK"), ("Dani Carvajal", "DEF"), ("Antonio Rüdiger", "DEF"),
+            ("David Alaba", "DEF"), ("Jude Bellingham", "MID"), ("Federico Valverde", "MID"),
+            ("Luka Modrić", "MID"), ("Vinícius Jr.", "ATT"), ("Kylian Mbappé", "ATT"),
+            ("Rodrygo", "ATT"), ("Brahim Díaz", "ATT"),
+        ],
+        "barcelona": [
+            ("Marc-André ter Stegen", "GK"), ("Jules Koundé", "DEF"), ("Ronald Araújo", "DEF"),
+            ("Alejandro Balde", "DEF"), ("Pedri", "MID"), ("Frenkie de Jong", "MID"),
+            ("Gavi", "MID"), ("Lamine Yamal", "ATT"), ("Robert Lewandowski", "ATT"),
+            ("Raphinha", "ATT"), ("Ferran Torres", "ATT"),
+        ],
+        "man-city": [
+            ("Ederson", "GK"), ("Kyle Walker", "DEF"), ("Rúben Dias", "DEF"),
+            ("Joško Gvardiol", "DEF"), ("Rodri", "MID"), ("Kevin De Bruyne", "MID"),
+            ("Phil Foden", "MID"), ("Erling Haaland", "ATT"), ("Jérémy Doku", "ATT"),
+            ("Savinho", "ATT"), ("Jack Grealish", "ATT"),
+        ],
+        "bayern": [
+            ("Manuel Neuer", "GK"), ("Joshua Kimmich", "DEF"), ("Dayot Upamecano", "DEF"),
+            ("Alphonso Davies", "DEF"), ("Jamal Musiala", "MID"), ("Leon Goretzka", "MID"),
+            ("Michael Olise", "MID"), ("Harry Kane", "ATT"), ("Leroy Sané", "ATT"),
+            ("Serge Gnabry", "ATT"), ("Kingsley Coman", "ATT"),
+        ],
+        "liverpool": [
+            ("Alisson Becker", "GK"), ("Trent Alexander-Arnold", "DEF"), ("Ibrahima Konaté", "DEF"),
+            ("Virgil van Dijk", "DEF"), ("Alexis Mac Allister", "MID"), ("Dominik Szoboszlai", "MID"),
+            ("Ryan Gravenberch", "MID"), ("Mohamed Salah", "ATT"), ("Darwin Núñez", "ATT"),
+            ("Luis Díaz", "ATT"), ("Cody Gakpo", "ATT"),
+        ],
+    },
+    "playwc": {
+        "argentina": [
+            ("Emiliano Martínez", "GK"), ("Nahuel Molina", "DEF"), ("Cristian Romero", "DEF"),
+            ("Nicolás Otamendi", "DEF"), ("Rodrigo De Paul", "MID"), ("Enzo Fernández", "MID"),
+            ("Alexis Mac Allister", "MID"), ("Lionel Messi", "ATT"), ("Julián Álvarez", "ATT"),
+            ("Lautaro Martínez", "ATT"), ("Ángel Di María", "ATT"),
+        ],
+        "portugal": [
+            ("Diogo Costa", "GK"), ("João Cancelo", "DEF"), ("Rúben Dias", "DEF"),
+            ("Pepe", "DEF"), ("Bruno Fernandes", "MID"), ("Bernardo Silva", "MID"),
+            ("Vitinha", "MID"), ("Cristiano Ronaldo", "ATT"), ("Rafael Leão", "ATT"),
+            ("Diogo Jota", "ATT"), ("João Félix", "ATT"),
+        ],
+        "brazil": [
+            ("Alisson Becker", "GK"), ("Danilo", "DEF"), ("Marquinhos", "DEF"),
+            ("Éder Militão", "DEF"), ("Casemiro", "MID"), ("Bruno Guimarães", "MID"),
+            ("Lucas Paquetá", "MID"), ("Neymar", "ATT"), ("Vinícius Jr.", "ATT"),
+            ("Rodrygo", "ATT"), ("Richarlison", "ATT"),
+        ],
+        "france": [
+            ("Mike Maignan", "GK"), ("Jules Koundé", "DEF"), ("William Saliba", "DEF"),
+            ("Dayot Upamecano", "DEF"), ("Aurélien Tchouaméni", "MID"), ("Eduardo Camavinga", "MID"),
+            ("Antoine Griezmann", "MID"), ("Kylian Mbappé", "ATT"), ("Ousmane Dembélé", "ATT"),
+            ("Olivier Giroud", "ATT"), ("Kingsley Coman", "ATT"),
+        ],
+        "spain": [
+            ("Unai Simón", "GK"), ("Dani Carvajal", "DEF"), ("Aymeric Laporte", "DEF"),
+            ("Robin Le Normand", "DEF"), ("Rodri", "MID"), ("Pedri", "MID"),
+            ("Dani Olmo", "MID"), ("Lamine Yamal", "ATT"), ("Álvaro Morata", "ATT"),
+            ("Nico Williams", "ATT"), ("Ferran Torres", "ATT"),
+        ],
+    },
+    "playacl": {
+        "al-hilal": [
+            ("Yassine Bounou", "GK"), ("João Cancelo", "DEF"), ("Kalidou Koulibaly", "DEF"),
+            ("Renan Lodi", "DEF"), ("Rúben Neves", "MID"), ("Sergej Milinković-Savić", "MID"),
+            ("Malcom", "MID"), ("Salem Al-Dawsari", "ATT"), ("Aleksandar Mitrović", "ATT"),
+            ("Marcos Leonardo", "ATT"), ("Michael", "ATT"),
+        ],
+        "al-nassr": [
+            ("Bento", "GK"), ("Sultan Al-Ghannam", "DEF"), ("Aymeric Laporte", "DEF"),
+            ("Ali Lajami", "DEF"), ("Marcelo Brozović", "MID"), ("Otávio", "MID"),
+            ("Sadio Mané", "MID"), ("Cristiano Ronaldo", "ATT"), ("Jhon Durán", "ATT"),
+            ("Anderson Talisca", "ATT"), ("Wesley", "ATT"),
+        ],
+        "al-ain": [
+            ("Patricio", "GK"), ("Erik", "DEF"), ("Kouadio-Yves Dabila", "DEF"),
+            ("Park Yong-woo", "DEF"), ("Mohammed Abbas", "MID"), ("Yahia Nader", "MID"),
+            ("Kaku", "MID"), ("Soufiane Rahimi", "ATT"), ("Kodjo Laba", "ATT"),
+            ("Matías Palacios", "ATT"), ("Laba Kordje", "ATT"),
+        ],
+        "urawa": [
+            ("Shusaku Nishikawa", "GK"), ("Hirokazu Ishihara", "DEF"), ("Alexander Scholz", "DEF"),
+            ("Marius Hoibraten", "DEF"), ("Samuel Gustafson", "MID"), ("Kaito Yasui", "MID"),
+            ("Takahiro Sekine", "MID"), ("Thiago Santana", "ATT"), ("Yusuke Matsuo", "ATT"),
+            ("Ryoma Watanabe", "ATT"), ("Toshiki Takahashi", "ATT"),
+        ],
+        "jeonbuk": [
+            ("Kim Jung-hoon", "GK"), ("Choi Chul-soon", "DEF"), ("Park Jin-seop", "DEF"),
+            ("Hong Jeong-ho", "DEF"), ("Park Yong-woo", "MID"), ("Lee Seung-woo", "MID"),
+            ("Han Kyo-won", "MID"), ("Song Min-kyu", "ATT"), ("Moon Seon-min", "ATT"),
+            ("Tiago Orobó", "ATT"), ("André Luís", "ATT"),
+        ],
+    },
+}

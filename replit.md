@@ -25,7 +25,7 @@ An advanced Telegram football card-collection and squad game powered by Kurigram
 - `services/match.py` — match simulation and scorecards
 - `plugins/` — extension point for future card and competition plugins
 - `Dockerfile`, `docker-compose.yml` — container and local MongoDB orchestration
-- `README.md` — bot setup, commands, and Docker usage
+- `README.md` — bot setup, commands, permissions, and Docker usage
 
 ## Architecture decisions
 
@@ -48,7 +48,9 @@ An advanced Telegram football card-collection and squad game powered by Kurigram
 
 - Telegram inline buttons do not support arbitrary background colors; the UI uses colored status icons and football-themed labels.
 - `OWNER_IDS` must contain numeric Telegram user IDs for `/admin`, player imports, templates, photo cards, and competition management.
-- Seeding is intentionally disabled: players, competitions, and teams must be added by owner commands.
+- Built-in UCL, WC, and ACL mode catalogues seed five named teams each at startup. Those competition-only cards are excluded from `/claim` and `/debut`.
+- Owner grants moderator levels with `/addmod USER_ID 1` or `/addmod USER_ID 2`: level 1 handles player database work; level 2 also manages templates and competition teams.
+- `/players` is a paginated private admin list, `/player NAME` is a fuzzy card search for all users, and `/botinfo` is an owner-only stats report.
 - Create custom modes such as `playcwc` with `/addcompetition cwc | Club World Cup | 🌐 | CLUB`; users can then run `/playcwc` in a group.
 - Add a team with `/addteam competition_key | team-key | Team name | Rating | Emoji | Player names`.
 - Add positional card art with `/addtemplate ID | POSITION | RARITY | VERSION` by replying to an image.

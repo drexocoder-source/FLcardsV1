@@ -23,7 +23,7 @@ HELP = """<b>Fʟ | Cᴀʀᴅs 🃏 — Commands</b>
 /start — Open the club hub
 /debut — Receive a balanced starting XI when player cards exist
 /claim — Claim a random player every 12 hours
-/commoncard — Generate a COMMON card preview
+/player Name — Search all added player cards
 
 <b>Your club</b>
 /collection — Browse all owned cards
@@ -40,8 +40,9 @@ HELP = """<b>Fʟ | Cᴀʀᴅs 🃏 — Commands</b>
 Custom modes such as /playcwc work automatically after the owner creates them.
 
 <b>Player imports</b>
-/addplayer — Add one or many pipe-delimited players
-/templateguide — View the bulk import template
+/addplayer — Add one or many pipe-delimited players (admin)
+/players — Browse the added player database (admin)
+/templateguide — View the bulk import template (admin)
 
 <b>Command areas</b>
 • Private chat: club tools, owner/admin tools, templates, and /resetall

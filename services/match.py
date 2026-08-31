@@ -115,7 +115,12 @@ def finish_live_state(state: dict[str, Any], home_players: list[dict[str, Any]],
 
 
 def live_scorecard(state: dict[str, Any], home_emoji: str = "🟦", away_emoji: str = "🟥") -> str:
-    winner = state["home"] if state["home_goals"] > state["away_goals"] else state["away"] if state["away_goals"] > state["home_goals"] else "Match drawn"
+    if state.get("penalties"):
+        penalty_home = state["penalties"]["home"]
+        penalty_away = state["penalties"]["away"]
+        winner = state["home"] if penalty_home > penalty_away else state["away"]
+    else:
+        winner = state["home"] if state["home_goals"] > state["away_goals"] else state["away"] if state["away_goals"] > state["home_goals"] else "Match drawn"
     penalty_line = ""
     if state.get("penalties"):
         penalty_line = f"\n🥅 Penalties: <b>{state['penalties']['home']} — {state['penalties']['away']}</b>"

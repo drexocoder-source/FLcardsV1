@@ -26,9 +26,8 @@ GENERAL_COMMANDS = [
     BotCommand("help", "See all player commands"),
     BotCommand("debut", "Receive your balanced starter squad"),
     BotCommand("claim", "Claim a random player"),
-    BotCommand("commoncard", "Generate a common card preview"),
+    BotCommand("player", "Search every added player card"),
     BotCommand("collection", "Browse your card collection"),
-    BotCommand("player", "Inspect a player card"),
     BotCommand("squad", "View your active squad"),
     BotCommand("profile", "View your club profile"),
     BotCommand("team", "Manage your club team"),
@@ -52,7 +51,8 @@ OWNER_COMMANDS = GENERAL_COMMANDS + [
     BotCommand("admin", "Open administrator tools"),
     BotCommand("addplayer", "Add one or many player cards"),
     BotCommand("addplayers", "Bulk import player cards"),
-    BotCommand("players", "Show the player database count"),
+    BotCommand("players", "Browse every player card"),
+    BotCommand("botinfo", "Show bot statistics"),
     BotCommand("addtemplate", "Save a card template"),
     BotCommand("templates", "List saved card templates"),
     BotCommand("templateguide", "View the card template guide"),
@@ -78,6 +78,7 @@ async def main() -> None:
     settings = Settings.from_env()
     database = MongoDatabase(settings.mongo_uri, settings.mongo_db_name)
     await database.connect()
+    await database.seed_mode_catalog()
     bot = Client(
         "fl_cards_session",
         api_id=settings.api_id,

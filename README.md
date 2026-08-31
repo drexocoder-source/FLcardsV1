@@ -7,9 +7,12 @@ An advanced Kurigram Telegram football manager and card game. The bot uses **Fʟ
 - `/claim` every 12 hours with retain, release, and view-card actions
 - Native Kurigram colored inline buttons with separate Club, Arena, Help, Support, and Developer destinations
 - `/collection`, `/squad`, and `/profile`
+- Fuzzy `/player Name` card search with aliases, typo tolerance, and next/back pagination
 - Owner-created group competitions for `/playcl`, `/playwc`, `/playacl`, and custom commands such as `/playcwc`
 - UCL uses fixed club squads, World Cup uses fixed national squads, and ACL uses fixed Asian club squads; these opponents are never taken from another user's collection
-- Owner/admin player management through `/admin`, `/addplayer`, `/addplayers`, and `/players` (seeding is disabled)
+- Owner/admin player management through `/admin`, `/addplayer`, `/addplayers`, and paginated `/players`
+- Owner-only `/botinfo` statistics and level 1/2 moderator permissions through `/addmod`
+- Seeded UCL, WC, and ACL mode catalogues with five named teams and competition-only rosters
 - Owner-created competitions and teams through `/addcompetition`, `/addteam`, `/editteam`, and `/deleteteam`
 - Manager team controls through `/team`, `/formation`, `/teamname`, `/subs`, and `/instruction`
 - Live player challenges with tactics, mentality, player instructions, substitutions, commentator updates, extra time, and penalties
@@ -37,7 +40,12 @@ Optional:
 - `OPENROUTER_MODEL` (defaults to `openai/gpt-4o-mini`)
 - `PORT` (defaults to `8080`)
 
-Add your Telegram numeric ID to `OWNER_IDS` to unlock the admin controls.
+Add your Telegram numeric ID to `OWNER_IDS` to unlock the owner controls. Owners can grant:
+
+- Level 1 moderators: `/players`, `/addplayer`, `/addplayers`, `/templates`, and `/templateguide`
+- Level 2 moderators: all level 1 tools plus `/addtemplate` and competition/team management
+
+Use `/addmod USER_ID 1` or `/addmod USER_ID 2`. `/botinfo` is owner-only.
 
 The owner command menu is private-chat only. `/arena`, `/playcl`, `/playwc`, `/playacl`, custom `/play...` modes, and `/challenge` are group-only. `/players` is a private owner/admin command and is not treated as a `/play...` mode.
 
@@ -70,7 +78,7 @@ Use `/arena` in a group to choose an owner-created competition. Each group has o
 
 ## Widescreen card templates
 
-The card renderer preserves uploaded template aspect ratios. For a red/black stadium design, export a **1280 × 640 (2:1)** PNG and keep these safe zones:
+The card renderer preserves uploaded template aspect ratios. For a red/black stadium design, export a **16:9 or 1280 × 640 (2:1)** PNG and keep these safe zones:
 
 - OVR `(54, 42)`, position `(54, 122)`, nation/club `(54, 176)`
 - Portrait `(370, 88)` to `(930, 472)`
@@ -78,6 +86,8 @@ The card renderer preserves uploaded template aspect ratios. For a red/black sta
 - Stats at `(54, 590)`, `(214, 590)`, `(374, 590)`, `(760, 590)`, `(920, 590)`, `(1080, 590)`
 
 Reply to the uploaded image with `/addtemplate gk-wide | GK | RARE | Widescreen 2:1`. Use the same canvas for CB, MID, and ATT, moving visual emphasis to DEF, PAS/DRI, and SHO/PAC respectively. `/templateguide` contains the full coordinate guide.
+
+Recommended position template IDs are `GK`, `CB`, `LB`, `RB`, `LWB`, `RWB`, `CDM`, `CM`, `CAM`, `LM`, `RM`, `LW`, `RW`, `CF`, `ST`, and `SS`. `DEF`, `MID`, `ATT`, and `ALL` can be used as fallbacks. Uploaded 16:9 and 2:1 artwork keeps its original aspect ratio while using the same safe-zone coordinates.
 
 ## PvP challenge
 
