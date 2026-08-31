@@ -12,6 +12,7 @@ from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMa
 from config import Settings
 from database.mongo import MongoDatabase
 from plugins.audit import audit
+from services.match_summary import render_match_summary
 
 
 
@@ -534,6 +535,59 @@ Keep the player database and card artwork separate so new card templates can be 
         }
         await database.add_player(player)
         await message.reply_text(f"Photo card <b>{name}</b> added. It will be delivered as the original image without rendering.")
+
+    @bot.on_message(filters.command("testms"))
+    async def test_match_summary_handler(_: Client, message: Message) -> None:
+        if not _owner_private(message, settings):
+            return
+        state = {
+            "home": "Bengaluru FC",
+            "away": "Mumbai City",
+            "home_goals": 2,
+            "away_goals": 1,
+            "home_possession": 54,
+            "home_shots": 13,
+            "away_shots": 8,
+            "home_shots_on_target": 7,
+            "away_shots_on_target": 3,
+            "home_corners": 6,
+            "away_corners": 2,
+            "events": [
+                {"type": "goal", "side": "home", "minute": 18, "scorer_name": "Sunil Chhetri"},
+                {"type": "goal", "side": "away", "minute": 51, "scorer_name": "Jorge Diaz"},
+                {"type": "goal", "side": "home", "minute": 83, "scorer_name": "Ryan Williams"},
+            ],
+        }
+        home_players = [
+            {"name": "Sunil Chhetri", "ovr": 84},
+            {"name": "Ryan Williams", "ovr": 82},
+        ]
+        away_players = [
+            {"name": "Jorge Diaz", "ovr": 79},
+            {"name": "Lalengmawia", "ovr": 77},
+        ]
+        image_path = None
+        try:
+            image_path = await asyncio.to_thread(
+                render_match_summary,
+                state,
+                home_players,
+                away_players,
+                "TEST MATCH",
+            )
+            await message.reply_photo(
+                image_path,
+                caption="⚽ Test football match summary generated successfully.",
+            )
+        except Exception:
+            await message.reply_text("The test summary could not be generated. Check the workflow logs.")
+        finally:
+            if image_path:
+                try:
+                    import os
+                    os.unlink(image_path)
+                except OSError:
+                    pass
 
     @bot.on_message(filters.command("addmod"))
     async def add_mod_handler(_: Client, message: Message) -> None:

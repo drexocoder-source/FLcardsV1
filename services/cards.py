@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -17,11 +18,14 @@ WIDTH, HEIGHT = 720, 960
 # ---------------------------------------------------------------------------
 # Fonts
 # ---------------------------------------------------------------------------
+@lru_cache(maxsize=64)
 def _font(
     size: int,
     bold: bool = False,
 ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    project_font = Path(__file__).resolve().parent.parent / "assets" / "fonts"
     candidates = [
+        str(project_font / ("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf")),
         (
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
             if bold
@@ -204,10 +208,10 @@ def _render_with_template(
     # These sizes are deliberately larger and are designed around the
     # actual 1280×720 template.
     # -----------------------------------------------------------------------
-    rating_size = round(canvas_height * 0.105)
-    field_size = round(canvas_height * 0.050)
-    nation_size = round(canvas_height * 0.043)
-    stat_size = round(canvas_height * 0.062)
+    rating_size = round(canvas_height * 0.100)
+    field_size = round(canvas_height * 0.055)
+    nation_size = round(canvas_height * 0.045)
+    stat_size = round(canvas_height * 0.060)
 
     # -----------------------------------------------------------------------
     # RATING
@@ -218,7 +222,7 @@ def _render_with_template(
         rating,
         max_width=canvas_width * 0.095,
         start_size=rating_size,
-        min_size=round(canvas_height * 0.070),
+        min_size=round(canvas_height * 0.075),
         bold=True,
     )
 
@@ -246,7 +250,7 @@ def _render_with_template(
         club,
         max_width=canvas_width * 0.185,
         start_size=field_size,
-        min_size=round(canvas_height * 0.032),
+        min_size=round(canvas_height * 0.035),
         bold=True,
     )
 
@@ -279,7 +283,7 @@ def _render_with_template(
         name,
         max_width=canvas_width * 0.185,
         start_size=field_size,
-        min_size=round(canvas_height * 0.030),
+        min_size=round(canvas_height * 0.033),
         bold=True,
     )
 
@@ -313,7 +317,7 @@ def _render_with_template(
             nation,
             max_width=canvas_width * 0.18,
             start_size=nation_size,
-            min_size=round(canvas_height * 0.030),
+            min_size=round(canvas_height * 0.032),
             bold=True,
         )
 
@@ -351,7 +355,7 @@ def _render_with_template(
             value,
             max_width=canvas_width * 0.055,
             start_size=stat_size,
-            min_size=round(canvas_height * 0.045),
+            min_size=round(canvas_height * 0.040),
             bold=True,
         )
 
@@ -386,7 +390,7 @@ def _render_with_template(
         output.name,
         "JPEG",
         quality=95,
-        optimize=True,
+        optimize=False,
         subsampling=0,
     )
 
@@ -414,8 +418,9 @@ def _render_generic(
         start,
     )
 
-    pixels = image.load()
-
+    # Draw one horizontal strip per row instead of touching every pixel in
+    # Python. This keeps fallback card generation responsive on pack openings.
+    draw = ImageDraw.Draw(image)
     for y in range(HEIGHT):
         ratio = y / HEIGHT
 
@@ -427,10 +432,7 @@ def _render_generic(
             for i in range(3)
         )
 
-        for x in range(WIDTH):
-            pixels[x, y] = color
-
-    draw = ImageDraw.Draw(image)
+        draw.line((0, y, WIDTH, y), fill=color, width=1)
 
     # -----------------------------------------------------------------------
     # Card border
@@ -662,7 +664,7 @@ def _render_generic(
         output.name,
         "JPEG",
         quality=95,
-        optimize=True,
+        optimize=False,
         subsampling=0,
     )
 

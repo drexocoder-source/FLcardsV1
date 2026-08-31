@@ -17,14 +17,16 @@ def shop_text(coins: int = 0, packs: dict | None = None) -> str:
         "",
         f"🪙 Your balance: <b>{coins:,} coins</b>",
         "",
-        "Each pack gives one random collectible card. Buy 1, 2, or 3 packs at once.",
+        "Each pack gives one random collectible card. Choose a pack below, then buy ×1, ×2, or ×3.",
         "Lower rarity and lower OVR cards are more likely; stronger cards can still drop.",
         "",
     ]
     for pack_key, pack in packs.items():
         drops = ", ".join(f"{rarity.title()} {weight}%" for rarity, weight in pack["drops"].items())
-        lines.append(f"{pack['emoji']} <b>{pack['name']}</b> · {pack['price']:,} coins")
+        lines.append(f"{pack['emoji']} <b>{pack['name']}</b> · <b>{pack['price']:,}</b> coins")
         lines.append(f"Drop odds: {drops}")
+        lines.append("")
+    lines.append("<b>Choose quantity</b>")
     return "\n".join(lines)
 
 
@@ -35,14 +37,23 @@ def shop_keyboard(packs: dict | None = None) -> InlineKeyboardMarkup:
         rows.append(
             [
                 InlineKeyboardButton(
-                    f"{pack['emoji']} {pack_key.title()} ×{quantity} · {pack['price'] * quantity:,}",
+                    f"{pack['emoji']} {pack['name']}",
+                    callback_data=f"shop:info:{pack_key}",
+                    style=ButtonStyle.PRIMARY,
+                )
+            ]
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    f"×{quantity} · {pack['price'] * quantity:,}",
                     callback_data=f"shop:buy:{pack_key}:{quantity}",
                     style=ButtonStyle.SUCCESS if quantity == 1 else ButtonStyle.PRIMARY,
                 )
                 for quantity in (1, 2, 3)
             ]
         )
-    rows.append([InlineKeyboardButton("🏠 Club hub", callback_data="menu:home", style=ButtonStyle.PRIMARY)])
+    rows.append([InlineKeyboardButton("🏠 Home", callback_data="menu:home", style=ButtonStyle.PRIMARY)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -58,7 +69,10 @@ def menu_keyboard(owner_id: int = 8186068163) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("🛟 Support", url="https://t.me/NexoraaBotss"),
             ],
             [shop_button()],
-            [InlineKeyboardButton("🎮 Open club controls", callback_data="menu:club", style=ButtonStyle.SUCCESS)],
+            [
+                InlineKeyboardButton("📚 Collection", callback_data="menu:collection", style=ButtonStyle.PRIMARY),
+                InlineKeyboardButton("🏟 Profile", callback_data="menu:profile", style=ButtonStyle.SUCCESS),
+            ],
         ]
     )
 
@@ -76,7 +90,7 @@ def club_keyboard() -> InlineKeyboardMarkup:
             ],
             [InlineKeyboardButton("🏟 Profile", callback_data="menu:profile", style=ButtonStyle.PRIMARY)],
             [shop_button()],
-            [InlineKeyboardButton("Club hub", callback_data="menu:home", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton("🏠 Home", callback_data="menu:home", style=ButtonStyle.PRIMARY)],
         ]
     )
 
@@ -94,7 +108,7 @@ def claim_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def back_keyboard(label: str = "Club hub", callback_data: str = "menu:home") -> InlineKeyboardMarkup:
+def back_keyboard(label: str = "Home", callback_data: str = "menu:home") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [shop_button(), InlineKeyboardButton(label, callback_data=callback_data, style=ButtonStyle.PRIMARY)],
@@ -113,9 +127,9 @@ def arena_keyboard(competitions: list[dict] | None = None) -> InlineKeyboardMark
             for competition in competitions
         ]
         rows = [competition_buttons[index : index + 2] for index in range(0, len(competition_buttons), 2)]
-        rows.append([shop_button(), InlineKeyboardButton("Club hub", callback_data="menu:home", style=ButtonStyle.PRIMARY)])
+        rows.append([shop_button(), InlineKeyboardButton("🏠 Home", callback_data="menu:home", style=ButtonStyle.PRIMARY)])
         return InlineKeyboardMarkup(rows)
-    return InlineKeyboardMarkup([[shop_button(), InlineKeyboardButton("Club hub", callback_data="menu:home", style=ButtonStyle.PRIMARY)]])
+    return InlineKeyboardMarkup([[shop_button(), InlineKeyboardButton("🏠 Home", callback_data="menu:home", style=ButtonStyle.PRIMARY)]])
 
 
 def help_keyboard() -> InlineKeyboardMarkup:
@@ -126,7 +140,7 @@ def help_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("🛟 Support", callback_data="menu:support", style=ButtonStyle.PRIMARY),
             ],
             [shop_button()],
-            [InlineKeyboardButton("Club hub", callback_data="menu:home", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton("🏠 Home", callback_data="menu:home", style=ButtonStyle.PRIMARY)],
         ]
     )
 
@@ -134,7 +148,7 @@ def help_keyboard() -> InlineKeyboardMarkup:
 def info_keyboard(destination: str = "menu:home") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
-            [shop_button(), InlineKeyboardButton("Club hub", callback_data=destination, style=ButtonStyle.PRIMARY)],
+            [shop_button(), InlineKeyboardButton("🏠 Home", callback_data=destination, style=ButtonStyle.PRIMARY)],
         ]
     )
 
@@ -148,5 +162,7 @@ def challenge_keyboard(challenge_id: str) -> InlineKeyboardMarkup:
             ],
             [shop_button()],
             [InlineKeyboardButton("Match rules", callback_data="menu:help", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton("↩️ Back", callback_data=f"challenge:back:{challenge_id}", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton("🏠 Home", callback_data="menu:home", style=ButtonStyle.PRIMARY)],
         ]
     )

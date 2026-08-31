@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import os
 import random
 import re
 from typing import Any
@@ -22,6 +23,7 @@ from services.match import (
     scorecard,
     simulate_match,
 )
+from services.match_summary import render_match_summary
 
 from .ui import arena_keyboard, back_keyboard, challenge_keyboard
 
@@ -74,7 +76,8 @@ LIVE_ACTIONS = (
 
 # Bonus reward on top of the base match payout, applied to the winner (and
 # halved for a draw). Losers keep only the base participation reward.
-WIN_BONUS_COINS = 100
+WIN_BONUS_MIN_COINS = 10
+WIN_BONUS_MAX_COINS = 50
 WIN_BONUS_XP = 50
 
 
@@ -284,7 +287,10 @@ def _team_keyboard(competition: dict[str, Any], game_id: str) -> InlineKeyboardM
         for index in range(0, len(teams), 2)
     ]
     rows.append(
-        [InlineKeyboardButton("Cancel lobby", callback_data=f"game:cancel:{game_id}", style=ButtonStyle.DANGER)],
+        [
+            InlineKeyboardButton("↩️ Back to Arena", callback_data=f"game:back:{game_id}", style=ButtonStyle.PRIMARY),
+            InlineKeyboardButton("Cancel lobby", callback_data=f"game:cancel:{game_id}", style=ButtonStyle.DANGER),
+        ],
     )
     return InlineKeyboardMarkup(rows)
 
@@ -411,15 +417,28 @@ def _challenge_halftime_keyboard(challenge: dict[str, Any]) -> InlineKeyboardMar
     ])
 
 
-def _formation_rows(prefix: str, game_id: str, formations: list[str]) -> list[list[InlineKeyboardButton]]:
+def _formation_rows(
+    prefix: str,
+    game_id: str,
+    formations: list[str],
+    back_callback: str | None = None,
+) -> list[list[InlineKeyboardButton]]:
     buttons = [InlineKeyboardButton(formation, callback_data=f"{prefix}:{game_id}:{formation}") for formation in formations]
-    return [buttons[index : index + 3] for index in range(0, len(buttons), 3)]
+    rows = [buttons[index : index + 3] for index in range(0, len(buttons), 3)]
+    if back_callback:
+        rows.append([InlineKeyboardButton("↩️ Back", callback_data=back_callback, style=ButtonStyle.PRIMARY)])
+    return rows
 
 
 def _challenge_setup_keyboard(challenge: dict[str, Any], user: dict[str, Any]) -> InlineKeyboardMarkup:
     side = "home" if challenge["challenger_id"] == user["user_id"] else "away"
     formations = unlocked_formations(user)
-    rows = _formation_rows("challenge:formation", challenge["challenge_id"], formations)
+    rows = _formation_rows(
+        "challenge:formation",
+        challenge["challenge_id"],
+        formations,
+        back_callback=f"challenge:back:{challenge['challenge_id']}",
+    )
     rows += [
         [
             InlineKeyboardButton(
@@ -479,7 +498,14 @@ def _set_piece_kind(text: str) -> str | None:
     return None
 
 
-def _player_rows(prefix: str, match_id: str, side: str, players: list[dict[str, Any]], action: str) -> InlineKeyboardMarkup:
+def _player_rows(
+    prefix: str,
+    match_id: str,
+    side: str,
+    players: list[dict[str, Any]],
+    action: str,
+    back_callback: str | None = None,
+) -> InlineKeyboardMarkup:
     rows = []
     for i in range(0, len(players), 2):
         rows.append([
@@ -488,6 +514,8 @@ def _player_rows(prefix: str, match_id: str, side: str, players: list[dict[str, 
                 callback_data=f"{prefix}:{action}:{match_id}:{side}:{p.get('player_id')}",
             ) for p in players[i:i+2]
         ])
+    if back_callback:
+        rows.append([InlineKeyboardButton("↩️ Back", callback_data=back_callback, style=ButtonStyle.PRIMARY)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -846,6 +874,35 @@ def _full_match_commentary(state: dict[str, Any]) -> str:
         if clean:
             blocks.append(f"<blockquote expandable>{clean}</blockquote>")
     return "<b>🎙 FULL MATCH COMMENTARY</b>\n\n" + "\n".join(blocks)
+
+
+async def _send_match_summary_image(
+    bot: Client,
+    chat_id: int,
+    state: dict[str, Any],
+    home_players: list[dict[str, Any]],
+    away_players: list[dict[str, Any]],
+    competition_name: str,
+) -> None:
+    """Send the visual result without allowing image failures to break a match."""
+    image_path = None
+    try:
+        image_path = await asyncio.to_thread(
+            render_match_summary,
+            state,
+            home_players,
+            away_players,
+            competition_name,
+        )
+        await bot.send_photo(chat_id, image_path, caption="⚽ Full-time football match summary")
+    except Exception:
+        pass
+    finally:
+        if image_path:
+            try:
+                os.unlink(image_path)
+            except OSError:
+                pass
 
 
 def _football_scorecard(
@@ -1221,7 +1278,7 @@ async def _run_group_match(bot: Client, database: MongoDatabase, settings: Setti
 
     finish_live_state(state, home_players, away_players)
     await database.finish_group_game(game_id, state)
-    await _reward_group_match(database, game, state)
+    payouts = await _reward_group_match(database, game, state)
     scorecard_text = _football_scorecard(state, home_players, away_players)
     final = f"<b>🏁 FULL TIME</b>\n\n{html.escape(state['home'])} {state['home_goals']} — {state['away_goals']} {html.escape(state['away'])}"
     try:
@@ -1230,6 +1287,20 @@ async def _run_group_match(bot: Client, database: MongoDatabase, settings: Setti
         await bot.send_message(game["chat_id"], _full_match_commentary(state))
     except Exception:
         pass
+    await _send_match_summary_image(
+        bot,
+        game["chat_id"],
+        state,
+        home_players,
+        away_players,
+        game.get("mode", "Manager Match"),
+    )
+    reward_text = _reward_text(payouts)
+    if reward_text:
+        try:
+            await bot.send_message(game["chat_id"], reward_text)
+        except Exception:
+            pass
     await audit(bot, settings, f"Group match finished: <b>{state['home']}</b> {state['home_goals']}-{state['away_goals']} <b>{state['away']}</b>")
     LIVE_TASKS.pop(game_id, None)
 
@@ -1340,7 +1411,21 @@ async def _group_penalty_shootout(
         await bot.send_message(game["chat_id"], _full_match_commentary(state))
     except Exception:
         pass
-    await _reward_group_match(database, game, state)
+    await _send_match_summary_image(
+        bot,
+        game["chat_id"],
+        state,
+        home_players,
+        away_players,
+        game.get("mode", "Manager Match"),
+    )
+    payouts = await _reward_group_match(database, game, state)
+    reward_text = _reward_text(payouts)
+    if reward_text:
+        try:
+            await bot.send_message(game["chat_id"], reward_text)
+        except Exception:
+            pass
     LIVE_TASKS.pop(game_id, None)
 
 
@@ -1371,33 +1456,74 @@ async def _start_group_match(bot: Client, database: MongoDatabase, settings: Set
     )
 
 
-async def _reward_group_match(database: MongoDatabase, game: dict[str, Any], state: dict[str, Any]) -> None:
-    home_win = state["home_goals"] > state["away_goals"]
-    away_win = state["away_goals"] > state["home_goals"]
-    draw = state["home_goals"] == state["away_goals"]
-    for user_id, is_home in ((game.get("host_id"), True), (game.get("opponent_id"), False)):
+def _winner_side(state: dict[str, Any]) -> str | None:
+    penalty_winner = state.get("penalty_winner")
+    if penalty_winner in {"home", "away"}:
+        return penalty_winner
+    if state["home_goals"] > state["away_goals"]:
+        return "home"
+    if state["away_goals"] > state["home_goals"]:
+        return "away"
+    return None
+
+
+async def _reward_group_match(
+    database: MongoDatabase,
+    game: dict[str, Any],
+    state: dict[str, Any],
+) -> list[tuple[str, int, int, str]]:
+    winner = _winner_side(state)
+    draw = winner is None
+    payouts = []
+    for user_id, is_home, manager_name in (
+        (game.get("host_id"), True, game.get("host_name", "Manager A")),
+        (game.get("opponent_id"), False, game.get("opponent_name", "Manager B")),
+    ):
         if not user_id:
             continue
-        won = home_win if is_home else away_win
-        if not (won or draw):
-            continue
-        coins = WIN_BONUS_COINS if won else WIN_BONUS_COINS // 2
+        won = winner == ("home" if is_home else "away")
+        coins = random.randint(WIN_BONUS_MIN_COINS, WIN_BONUS_MAX_COINS) if won else random.randint(5, 25) if draw else 0
         xp = WIN_BONUS_XP if won else WIN_BONUS_XP // 2
-        user = await database.get_user(user_id) or {}
-        await database.update_user(user_id, {"coins": user.get("coins", 0) + coins, "xp": user.get("xp", 0) + xp})
+        outcome = "win" if won else "draw"
+        if draw is False and not won:
+            outcome = "loss"
+            xp = 0
+        if await database.award_match_result("group", game["game_id"], user_id, coins, xp, outcome) and (won or draw):
+            payouts.append((manager_name, coins, xp, outcome))
+    return payouts
 
 
-async def _reward_challenge(database: MongoDatabase, challenge: dict[str, Any], state: dict[str, Any]) -> None:
-    home_win = state["home_goals"] > state["away_goals"]
-    away_win = state["away_goals"] > state["home_goals"]
-    for user_id, is_home in ((challenge["challenger_id"], True), (challenge["challenged_id"], False)):
-        won = home_win if is_home else away_win
+async def _reward_challenge(
+    database: MongoDatabase,
+    challenge: dict[str, Any],
+    state: dict[str, Any],
+) -> list[tuple[str, int, int, str]]:
+    winner = _winner_side(state)
+    draw = winner is None
+    payouts = []
+    for user_id, is_home, manager_name in (
+        (challenge["challenger_id"], True, challenge.get("challenger_name", "Manager A")),
+        (challenge["challenged_id"], False, challenge.get("challenged_name", "Manager B")),
+    ):
+        won = winner == ("home" if is_home else "away")
         coins, xp = 1500, 250
         if won:
-            coins += WIN_BONUS_COINS
+            coins += random.randint(WIN_BONUS_MIN_COINS, WIN_BONUS_MAX_COINS)
             xp += WIN_BONUS_XP
-        user = await database.get_user(user_id) or {}
-        await database.update_user(user_id, {"coins": user.get("coins", 0) + coins, "xp": user.get("xp", 0) + xp})
+        outcome = "win" if won else "draw" if draw else "loss"
+        if await database.award_match_result("challenge", challenge["challenge_id"], user_id, coins, xp, outcome):
+            payouts.append((manager_name, coins, xp, outcome))
+    return payouts
+
+
+def _reward_text(payouts: list[tuple[str, int, int, str]]) -> str:
+    if not payouts:
+        return ""
+    lines = ["<b>🎁 MATCH REWARDS</b>"]
+    for name, coins, xp, outcome in payouts:
+        label = "Winner" if outcome == "win" else "Draw share" if outcome == "draw" else "Participation"
+        lines.append(f"🏅 {html.escape(str(name))} · {label}: <b>+{coins:,} coins</b> · +{xp} XP")
+    return "\n".join(lines)
 
 
 async def _challenge_penalty_shootout(
@@ -1485,7 +1611,21 @@ async def _challenge_penalty_shootout(
         await bot.send_message(challenge["chat_id"], _full_match_commentary(state))
     except Exception:
         pass
-    await _reward_challenge(database, challenge, state)
+    await _send_match_summary_image(
+        bot,
+        challenge["chat_id"],
+        state,
+        home_players,
+        away_players,
+        "Manager Challenge",
+    )
+    payouts = await _reward_challenge(database, challenge, state)
+    reward_text = _reward_text(payouts)
+    if reward_text:
+        try:
+            await bot.send_message(challenge["chat_id"], reward_text)
+        except Exception:
+            pass
     LIVE_TASKS.pop(cid, None)
 
 
@@ -1675,7 +1815,21 @@ async def _run_challenge(bot: Client, database: MongoDatabase, settings: Setting
             await bot.send_message(user_id, _full_match_commentary(state))
         except Exception:
             pass
-    await _reward_challenge(database, challenge, state)
+    await _send_match_summary_image(
+        bot,
+        challenge["chat_id"],
+        state,
+        home_players,
+        away_players,
+        "Manager Challenge",
+    )
+    payouts = await _reward_challenge(database, challenge, state)
+    reward_text = _reward_text(payouts)
+    if reward_text:
+        try:
+            await bot.send_message(challenge["chat_id"], reward_text)
+        except Exception:
+            pass
     await audit(bot, settings, f"Manager challenge finished: <b>{challenge['challenger_name']}</b> {state['home_goals']}-{state['away_goals']} <b>{challenge['challenged_name']}</b>")
     LIVE_TASKS.pop(challenge_id, None)
 
@@ -1850,12 +2004,24 @@ def register_mode_handlers(bot: Client, database: MongoDatabase, settings: Setti
             reply_markup=back_keyboard("Back to Arena", "menu:arena"),
         )
 
-    @bot.on_callback_query(filters.regex(r"^game:(join|cancel|cancel_confirm|cancel_abort):([a-f0-9]+)$"))
+    @bot.on_callback_query(filters.regex(r"^game:(join|back|cancel|cancel_confirm|cancel_abort):([a-f0-9]+)$"))
     async def group_lobby_handler(_: Client, query: CallbackQuery) -> None:
         action, game_id = query.data.split(":")[1:]
         game = await database.get_group_game(game_id)
         if not game or game.get("status") in {"finished", "cancelled"}:
             await query.answer("This game is already closed.", show_alert=True)
+            return
+
+        if action == "back":
+            if game.get("status") not in {"lobby", "setup"} or not await _cancel_group_game(bot, database, game, query.from_user):
+                await query.answer("Only a manager can leave this match.", show_alert=True)
+                return
+            await query.answer("Returned to Arena.")
+            competitions = await database.list_competitions()
+            await query.message.edit_text(
+                "<b>🔥 ARENA</b>\n\nChoose a group competition.",
+                reply_markup=arena_keyboard(competitions),
+            )
             return
 
         if action in {"cancel", "cancel_confirm", "cancel_abort"}:
@@ -1969,7 +2135,12 @@ def register_mode_handlers(bot: Client, database: MongoDatabase, settings: Setti
         await query.answer(selected["name"])
         if next_phase == "formation_host":
             host_user = await database.get_user(game.get("host_id")) or {}
-            formation_rows = _formation_rows("game:formation", game_id, unlocked_formations(host_user))
+            formation_rows = _formation_rows(
+                "game:formation",
+                game_id,
+                unlocked_formations(host_user),
+                back_callback=f"game:back:{game_id}",
+            )
             await query.message.edit_text(_mode_text(game, competition), reply_markup=InlineKeyboardMarkup(formation_rows))
         else:
             await query.message.edit_text(_mode_text(game, competition), reply_markup=_team_keyboard(competition, game_id))
@@ -1996,7 +2167,12 @@ def register_mode_handlers(bot: Client, database: MongoDatabase, settings: Setti
         await query.answer(f"{formation} selected.")
         if next_phase == "formation_away":
             opponent_user = await database.get_user(game.get("opponent_id")) or {}
-            formation_rows = _formation_rows("game:formation", game_id, unlocked_formations(opponent_user))
+            formation_rows = _formation_rows(
+                "game:formation",
+                game_id,
+                unlocked_formations(opponent_user),
+                back_callback=f"game:back:{game_id}",
+            )
             await query.message.edit_text(
                 _mode_text(game, competition),
                 reply_markup=InlineKeyboardMarkup(formation_rows),
@@ -2061,7 +2237,10 @@ def register_mode_handlers(bot: Client, database: MongoDatabase, settings: Setti
         await query.answer("Choose the player to take off.")
         await query.message.edit_text(
             f"<b>🔁 {html.escape(_turn_name(game, side))} · SUBSTITUTION</b>\n\nChoose the player coming off:",
-            reply_markup=_player_rows("game", game_id, side, players, "subout"),
+            reply_markup=_player_rows(
+                "game", game_id, side, players, "subout",
+                back_callback=f"game:subback:{game_id}:{side}",
+            ),
         )
 
     @bot.on_callback_query(filters.regex(r"^game:subout:([a-f0-9]+):(home|away):(.+)$"))
@@ -2076,14 +2255,21 @@ def register_mode_handlers(bot: Client, database: MongoDatabase, settings: Setti
         lineup = game.get(f"{side}_lineup", [])[:11]
         bench_ids = [pid for pid in game.get(f"{side}_players", []) if pid not in lineup]
         if player_id not in lineup or not bench_ids:
-            await query.answer("Invalid substitution.", show_alert=True)
+            await query.answer("No valid substitute is available.", show_alert=True)
+            await query.message.edit_text(
+                "<b>🔁 SUBSTITUTION</b>\n\nNo valid substitute is available.",
+                reply_markup=_group_halftime_keyboard(game),
+            )
             return
         bench = await database.get_players(bench_ids)
         await database.update_group_game(game_id, {f"pending_{side}_out": player_id})
         await query.answer("Now choose the incoming player.")
         await query.message.edit_text(
             "<b>🔁 CHOOSE INCOMING PLAYER</b>\n\nSelect the substitute:",
-            reply_markup=_player_rows("game", game_id, side, bench, "subin"),
+            reply_markup=_player_rows(
+                "game", game_id, side, bench, "subin",
+                back_callback=f"game:subback:{game_id}:{side}",
+            ),
         )
 
     @bot.on_callback_query(filters.regex(r"^game:subin:([a-f0-9]+):(home|away):(.+)$"))
@@ -2099,7 +2285,11 @@ def register_mode_handlers(bot: Client, database: MongoDatabase, settings: Setti
         lineup = game.get(f"{side}_lineup", [])[:11]
         bench = [pid for pid in game.get(f"{side}_players", []) if pid not in lineup]
         if not outgoing or outgoing not in lineup or incoming not in bench:
-            await query.answer("Invalid substitution.", show_alert=True)
+            await query.answer("That substitute is no longer available.", show_alert=True)
+            await query.message.edit_text(
+                "<b>🔁 SUBSTITUTION</b>\n\nChoose another action.",
+                reply_markup=_group_halftime_keyboard(game),
+            )
             return
         lineup[lineup.index(outgoing)] = incoming
         await database.update_group_game(game_id, {
@@ -2115,6 +2305,28 @@ def register_mode_handlers(bot: Client, database: MongoDatabase, settings: Setti
             f"<b>{html.escape(_turn_name(game, other))}</b> may now make a substitution.",
             reply_markup=_group_halftime_keyboard(game),
         )
+
+    @bot.on_callback_query(filters.regex(r"^(game|live):subback:([a-f0-9]+):(home|away)$"))
+    async def substitution_back_handler(_: Client, query: CallbackQuery) -> None:
+        prefix, match_id, side = query.data.split(":")[0], query.data.split(":")[2], query.data.split(":")[3]
+        if prefix == "game":
+            record = await database.get_group_game(match_id)
+            expected = record.get("host_id") if side == "home" else record.get("opponent_id") if record else None
+            keyboard = _group_halftime_keyboard(record) if record else None
+            update = database.update_group_game
+            title = "<b>⏸ HALF-TIME</b>\n\nChoose an option below."
+        else:
+            record = await database.get_challenge(match_id)
+            expected = record.get("challenger_id") if side == "home" else record.get("challenged_id") if record else None
+            keyboard = _challenge_halftime_keyboard(record) if record else None
+            update = database.update_challenge
+            title = "<b>⏸ HALF-TIME</b>\n\nChoose an option below."
+        if not record or query.from_user.id != expected or not record.get("halftime"):
+            await query.answer("This substitution panel is no longer active.", show_alert=True)
+            return
+        await update(match_id, {f"pending_{side}_out": None})
+        await query.answer("Back to half-time options.")
+        await query.message.edit_text(title, reply_markup=keyboard)
 
     @bot.on_callback_query(filters.regex(r"^game:setpiece:([a-f0-9]+):(home|away):(corner|free_kick):(.+)$"))
     async def group_set_piece_taker_handler(_: Client, query: CallbackQuery) -> None:
@@ -2317,15 +2529,31 @@ Accept to choose formations, tactics, player instructions, and substitutions dur
         await database.update_challenge(challenge_id, {f"penalty_{side}_taker": player_id})
         await query.answer("Penalty taker selected.")
 
-    @bot.on_callback_query(filters.regex(r"^challenge:(accept|decline):([a-f0-9]+)$"))
+    @bot.on_callback_query(filters.regex(r"^challenge:(accept|decline|back):([a-f0-9]+)$"))
     async def challenge_action_handler(_: Client, query: CallbackQuery) -> None:
         action, challenge_id = query.data.split(":")[1:]
         challenge = await database.get_challenge(challenge_id)
         if not challenge or challenge.get("status") != "pending":
+            if action == "back" and challenge and challenge.get("status") == "setup":
+                if query.from_user.id not in {challenge["challenger_id"], challenge["challenged_id"]}:
+                    await query.answer("This challenge belongs to another manager.", show_alert=True)
+                    return
+                await database.finish_challenge(challenge_id, {"status": "cancelled", "cancelled_by": query.from_user.id})
+                task = LIVE_TASKS.pop(challenge_id, None)
+                if task and not task.done():
+                    task.cancel()
+                await query.answer("Challenge closed.")
+                await query.message.edit_text("<b>Challenge closed.</b>\n\nNo rewards were issued.")
+                return
             await query.answer("This challenge has expired.", show_alert=True)
             return
         if query.from_user.id != challenge["challenged_id"]:
             await query.answer("This challenge belongs to another manager.", show_alert=True)
+            return
+        if action == "back":
+            await query.answer("Challenge declined.")
+            await database.finish_challenge(challenge_id, {"status": "declined"})
+            await query.message.edit_text("<b>Challenge declined.</b>")
             return
         if action == "decline":
             await query.answer("Challenge declined.")
@@ -2335,7 +2563,10 @@ Accept to choose formations, tactics, player instructions, and substitutions dur
         _, home_players = await database.get_user_players(challenge["challenger_id"], squad_only=True)
         _, away_players = await database.get_user_players(challenge["challenged_id"], squad_only=True)
         if len(home_players) < 11 or len(away_players) < 11:
-            await query.message.edit_text("Both managers need an 11-player active squad.")
+            await query.message.edit_text(
+                "<b>Challenge unavailable.</b>\n\nBoth managers need an 11-player active squad before they can play.",
+                reply_markup=back_keyboard("🏠 Home", "menu:home"),
+            )
             return
         home_user = await database.get_user(challenge["challenger_id"]) or {}
         away_user = await database.get_user(challenge["challenged_id"]) or {}
@@ -2481,7 +2712,10 @@ Accept to choose formations, tactics, player instructions, and substitutions dur
         await query.answer("Choose the player to take off.")
         await query.message.edit_text(
             f"<b>🔁 SUBSTITUTION</b>\n\nChoose the player coming off:",
-            reply_markup=_player_rows("live", challenge_id, side, players, "subout"),
+            reply_markup=_player_rows(
+                "live", challenge_id, side, players, "subout",
+                back_callback=f"live:subback:{challenge_id}:{side}",
+            ),
         )
 
     @bot.on_callback_query(filters.regex(r"^live:subout:([a-f0-9]+):(home|away):(.+)$"))
@@ -2496,7 +2730,11 @@ Accept to choose formations, tactics, player instructions, and substitutions dur
         lineup = challenge.get(f"{side}_lineup", [])[:11]
         bench_ids = [pid for pid in challenge.get(f"{side}_players", []) if pid not in lineup]
         if player_id not in lineup or not bench_ids:
-            await query.answer("Invalid substitution.", show_alert=True)
+            await query.answer("No valid substitute is available.", show_alert=True)
+            await query.message.edit_text(
+                "<b>🔁 SUBSTITUTION</b>\n\nNo valid substitute is available.",
+                reply_markup=_challenge_halftime_keyboard(challenge),
+            )
             return
         bench = await database.get_players(bench_ids)
         rows = []
@@ -2510,6 +2748,7 @@ Accept to choose formations, tactics, player instructions, and substitutions dur
             ])
         await database.update_challenge(challenge_id, {f"pending_{side}_out": player_id})
         await query.answer("Now choose the incoming player.")
+        rows.append([InlineKeyboardButton("↩️ Back", callback_data=f"live:subback:{challenge_id}:{side}", style=ButtonStyle.PRIMARY)])
         await query.message.edit_text("<b>🔁 CHOOSE INCOMING PLAYER</b>\n\nSelect the substitute:", reply_markup=InlineKeyboardMarkup(rows))
 
     @bot.on_callback_query(filters.regex(r"^live:subin:([a-f0-9]+):(home|away):(.+)$"))
@@ -2569,7 +2808,13 @@ Accept to choose formations, tactics, player instructions, and substitutions dur
             return
         players = await database.get_players(challenge.get(f"{side}_lineup", [])[:11])
         await query.answer("Choose the player coming off.")
-        await query.message.edit_text("<b>🔁 SUBSTITUTION</b>\n\nChoose the player coming off:", reply_markup=_player_rows("live", challenge_id, side, players, "subout"))
+        await query.message.edit_text(
+            "<b>🔁 SUBSTITUTION</b>\n\nChoose the player coming off:",
+            reply_markup=_player_rows(
+                "live", challenge_id, side, players, "subout",
+                back_callback=f"live:subback:{challenge_id}:{side}",
+            ),
+        )
 
     @bot.on_callback_query(filters.regex(r"^live:([a-f0-9]+):turn:(home|away):([A-Za-z_]+)$"))
     async def live_manager_turn_handler(_: Client, query: CallbackQuery) -> None:

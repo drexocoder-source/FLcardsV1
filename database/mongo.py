@@ -700,3 +700,42 @@ class MongoDatabase:
             {"challenge_id": challenge_id},
             {"$set": {"status": "finished", "result": result, "finished_at": datetime.now(UTC)}},
         )
+
+    async def award_match_result(
+        self,
+        match_kind: str,
+        match_id: str,
+        user_id: int,
+        coins: int,
+        xp: int,
+        outcome: str,
+    ) -> bool:
+        """Apply a finished-match reward once per manager.
+
+        The reward marker is written with the match update itself, so a repeated
+        finish callback or a restarted live task cannot pay the same manager twice.
+        """
+        collection = self.group_games if match_kind == "group" else self.db.challenges
+        identifier = "game_id" if match_kind == "group" else "challenge_id"
+        marked = await collection.update_one(
+            {identifier: match_id, "rewarded_users": {"$ne": user_id}},
+            {"$addToSet": {"rewarded_users": user_id}},
+        )
+        if marked.modified_count != 1:
+            return False
+        await self.users.update_one(
+            {"user_id": user_id},
+            {
+                "$inc": {
+                    "coins": int(coins),
+                    "xp": int(xp),
+                    "matches_played": 1,
+                    "wins": 1 if outcome == "win" else 0,
+                    "draws": 1 if outcome == "draw" else 0,
+                    "losses": 1 if outcome == "loss" else 0,
+                    "match_coins_earned": int(coins),
+                },
+                "$set": {"updated_at": datetime.now(UTC)},
+            },
+        )
+        return True

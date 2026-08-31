@@ -13,6 +13,7 @@ COPY database ./database
 COPY dhandlers ./dhandlers
 COPY plugins ./plugins
 COPY services ./services
+COPY assets ./assets
 
 EXPOSE 8080
 

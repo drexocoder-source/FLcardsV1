@@ -64,6 +64,7 @@ OWNER_COMMANDS = GENERAL_COMMANDS + [
     BotCommand("editteam", "Edit an owner-created team"),
     BotCommand("deleteteam", "Delete an owner-created team"),
     BotCommand("tplayer", "Create an owner photo card"),
+    BotCommand("testms", "Generate a test football match summary"),
     BotCommand("mods", "List moderators"),
     BotCommand("addmod", "Grant moderator access"),
     BotCommand("removemod", "Remove moderator access"),

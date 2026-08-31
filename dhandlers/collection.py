@@ -5,6 +5,7 @@ import base64
 import binascii
 import html
 import os
+from pathlib import Path
 from datetime import UTC, datetime
 
 from pyrogram import Client, filters
@@ -16,6 +17,11 @@ from config import Settings
 from services.cards import render_player_card
 
 from .ui import back_keyboard, claim_keyboard, shop_button, shop_keyboard, shop_text
+
+
+_TEMPLATE_CACHE_DIR = Path("/tmp/fl-card-templates")
+_TEMPLATE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_TEMPLATE_DOWNLOAD_LOCK = asyncio.Lock()
 
 FORMATIONS = {
     "4-3-3": 1,
@@ -90,7 +96,7 @@ def _player_page_keyboard(token: str, page: int, total: int) -> InlineKeyboardMa
     if page + 1 < total:
         buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"playerpage:{token}:{page + 1}"))
     rows = [buttons] if buttons else []
-    rows.append([shop_button(), InlineKeyboardButton("🏠 Club hub", callback_data="menu:home", style=ButtonStyle.PRIMARY)])
+    rows.append([shop_button(), InlineKeyboardButton("🏠 Home", callback_data="menu:home", style=ButtonStyle.PRIMARY)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -181,20 +187,56 @@ async def _render_card(bot: Client, database: MongoDatabase, player: dict) -> st
         if template:
             break
     if template and template.get("image_file_id"):
-        try:
-            template_path = await bot.download_media(
-                template["image_file_id"],
-                file_name=f"/tmp/fl-template-{template['template_id']}.png",
-            )
-        except Exception:
-            template_path = None
+        cached_path = _TEMPLATE_CACHE_DIR / f"{template['template_id']}.png"
+        async with _TEMPLATE_DOWNLOAD_LOCK:
+            if cached_path.exists():
+                template_path = str(cached_path)
+            else:
+                temporary_path = _TEMPLATE_CACHE_DIR / f".{template['template_id']}.download"
+                try:
+                    downloaded = await bot.download_media(
+                        template["image_file_id"],
+                        file_name=str(temporary_path),
+                    )
+                    downloaded_path = Path(downloaded or temporary_path)
+                    downloaded_path.replace(cached_path)
+                    template_path = str(cached_path)
+                except Exception:
+                    for path in (temporary_path, cached_path):
+                        try:
+                            path.unlink()
+                        except OSError:
+                            pass
+                    template_path = None
     card_path = await asyncio.to_thread(render_player_card, player, template_path, template.get("layout") if template else None)
-    if template_path:
-        try:
-            os.unlink(template_path)
-        except OSError:
-            pass
     return card_path
+
+
+def _profile_text(user: dict, players: list[dict], display_name: str) -> str:
+    xp = int(user.get("xp", 0))
+    level = xp // 1000 + 1
+    xp_in_level = xp % 1000
+    collection_count = len(user.get("collection", []))
+    best_card = max(players, key=lambda player: int(player.get("ovr", 0)), default=None)
+    wins = int(user.get("wins", 0))
+    draws = int(user.get("draws", 0))
+    losses = int(user.get("losses", 0))
+    return f"""<b>MANAGER PROFILE</b>
+
+👤 <b>{html.escape(display_name)}</b>
+🏟 Team: <b>{html.escape(str(user.get('team_name', 'Legacy United')))}</b>
+🎚 Level: <b>{level}</b> · XP: <b>{xp_in_level:,}/1,000</b>
+
+🪙 Coins: <b>{int(user.get('coins', 0)):,}</b>
+💎 Glory: <b>{int(user.get('glory', 0)):,}</b>
+📚 Collection: <b>{collection_count}/100</b>
+🟢 Active squad: <b>{len(players)}/25</b>
+⭐ Squad OVR: <b>{round(sum(player.get('ovr', 0) for player in players) / max(len(players), 1))}</b>
+
+📊 Record: <b>{wins}W · {draws}D · {losses}L</b>
+🎯 Formation: <b>{html.escape(str(user.get('formation', '4-3-3')))}</b>
+🧠 Style: <b>{html.escape(str(user.get('tactics', 'Balanced')))}</b> · <b>{html.escape(str(user.get('mentality', 'Balanced')))}</b>
+🏅 Best active card: <b>{html.escape(str(best_card.get('name', '—') if best_card else '—'))}</b> · OVR <b>{int(best_card.get('ovr', 0)) if best_card else 0}</b>"""
 
 
 async def _send_card(
@@ -312,6 +354,19 @@ Choose what happens to this card:"""
                 reply_markup=shop_keyboard(packs),
             )
 
+    @bot.on_callback_query(filters.regex(r"^shop:info:(COMMON|RARE|EPIC|ELITE|LEGENDARY)$"))
+    async def shop_info_handler(_: Client, query: CallbackQuery) -> None:
+        pack_key = query.data.split(":")[-1]
+        packs = await database.get_shop_packs()
+        pack = packs.get(pack_key)
+        if not pack:
+            await query.answer("That pack is unavailable.", show_alert=True)
+            return
+        await query.answer(
+            f"{pack['name']}: {pack['price']:,} coins each. Choose ×1, ×2, or ×3 below.",
+            show_alert=True,
+        )
+
     @bot.on_message(filters.command("collection"))
     async def collection_handler(_: Client, message: Message) -> None:
         await database.get_or_create_user(message.from_user)
@@ -351,14 +406,7 @@ Choose what happens to this card:"""
         user, players = await database.get_user_players(message.from_user.id, squad_only=True)
         rating = round(sum(player.get("ovr", 0) for player in players) / max(len(players), 1))
         await message.reply_text(
-            f"""<b>CLUB PROFILE</b>
-
-👤 {message.from_user.first_name}
-🪙 Coins: <b>{user.get('coins', 0):,}</b>
-💎 Glory: <b>{user.get('glory', 0):,}</b>
-✨ XP: <b>{user.get('xp', 0):,}</b>
-🏟 Squad: <b>{len(players)}/25</b>
-⭐ Squad OVR: <b>{rating}</b>""",
+            _profile_text(user, players, message.from_user.first_name),
             reply_markup=back_keyboard(),
         )
 
@@ -473,15 +521,8 @@ Choose what happens to this card:""",
             user, players = await database.get_user_players(query.from_user.id, squad_only=True)
             rating = round(sum(player.get("ovr", 0) for player in players) / max(len(players), 1))
             await query.message.edit_text(
-                f"""<b>CLUB PROFILE</b>
-
-👤 {query.from_user.first_name}
-🪙 Coins: <b>{user.get('coins', 0):,}</b>
-💎 Glory: <b>{user.get('glory', 0):,}</b>
-✨ XP: <b>{user.get('xp', 0):,}</b>
-🏟 Squad: <b>{len(players)}/25</b>
-⭐ Squad OVR: <b>{rating}</b>""",
-                reply_markup=back_keyboard("Club hub"),
+                _profile_text(user, players, query.from_user.first_name),
+                reply_markup=back_keyboard(),
             )
         elif command == "team":
             user = await database.get_or_create_user(query.from_user)

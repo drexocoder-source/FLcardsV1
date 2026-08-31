@@ -15,7 +15,7 @@ WELCOME = """<b>Fʟ | Cᴀʀᴅs 🃏</b>
 
 Collect players, shape your squad, and manage live group matches.
 
-Use the short main menu below, or open club controls for collection and squad tools."""
+Use the short main menu below, or open your collection and profile directly."""
 
 HELP = """<b>Fʟ | Cᴀʀᴅs 🃏 — Commands</b>
 
