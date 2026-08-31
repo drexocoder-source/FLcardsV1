@@ -1,0 +1,529 @@
+from __future__ import annotations
+
+import asyncio
+import re
+from uuid import uuid4
+
+from pyrogram import Client, filters
+from pyrogram.enums import ChatType
+from pyrogram.types import Message
+
+from config import Settings
+from database.mongo import MongoDatabase
+from plugins.audit import audit
+
+
+
+async def _is_admin(user_id: int, database: MongoDatabase, settings: Settings) -> bool:
+    return user_id in settings.owner_ids or await database.is_mod(user_id)
+
+
+def _is_owner(user_id: int, settings: Settings) -> bool:
+    return user_id in settings.owner_ids
+
+
+def _is_private(message: Message) -> bool:
+    chat_type = message.chat.type
+    return chat_type == ChatType.PRIVATE or str(chat_type).lower().split(".")[-1] == "private"
+
+
+def _owner_private(message: Message, settings: Settings) -> bool:
+    return _is_private(message) and _is_owner(message.from_user.id, settings)
+
+
+def _player_from_parts(parts: list[str]) -> dict:
+    if len(parts) != 18:
+        raise ValueError(f"Expected 18 fields, received {len(parts)}")
+    (
+        name,
+        nation,
+        club,
+        position,
+        secondary_positions,
+        rarity,
+        ovr,
+        pace,
+        shooting,
+        passing,
+        dribbling,
+        defending,
+        physical,
+        preferred_foot,
+        weak_foot,
+        skill_moves,
+        height,
+        traits,
+    ) = parts[:18]
+    return {
+        "player_id": f"custom-{uuid4().hex[:10]}",
+        "name": name,
+        "nation": nation or "🌐",
+        "club": club,
+        "position": position.upper(),
+        "secondary_positions": [item.strip().upper() for item in secondary_positions.split(",") if item.strip()],
+        "rarity": rarity.upper() or "RARE",
+        "ovr": int(ovr),
+        "pace": int(pace),
+        "shooting": int(shooting),
+        "passing": int(passing),
+        "dribbling": int(dribbling),
+        "defending": int(defending),
+        "physical": int(physical),
+        "preferred_foot": preferred_foot or "Right",
+        "weak_foot": int(weak_foot),
+        "skill_moves": int(skill_moves),
+        "height": height,
+        "traits": [item.strip() for item in traits.split(",") if item.strip()],
+    }
+
+
+async def _bulk_import(
+    bot: Client,
+    database: MongoDatabase,
+    settings: Settings,
+    message: Message,
+    source: str,
+) -> None:
+    if not source.strip() and message.reply_to_message:
+        source = message.reply_to_message.text or message.reply_to_message.caption or ""
+    lines = [
+        line.strip()
+        for line in source.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not lines:
+        await message.reply_text(
+            "<b>No player rows found.</b>\n\nUse /templateguide for the 18-field template. Send multiple rows on separate lines, or reply to a message containing them.",
+        )
+        return
+
+    progress = await message.reply_text(
+        f"<b>PLAYER IMPORT</b>\n\n🔎 Analyzing <b>0/{len(lines)}</b> rows...\nPlease keep this message open for the live import report."
+    )
+    added_names: list[str] = []
+    duplicate_names: list[str] = []
+    invalid_rows: list[str] = []
+
+    for index, line in enumerate(lines, 1):
+        try:
+            player = _player_from_parts([re.sub(r"\s+", " ", part.strip()) for part in line.split("|")])
+            if await database.add_player_if_new(player):
+                added_names.append(player["name"])
+            else:
+                duplicate_names.append(player["name"])
+        except (ValueError, IndexError) as exc:
+            invalid_rows.append(f"Row {index}: {str(exc)}")
+
+        await progress.edit_text(
+            f"<b>PLAYER IMPORT</b>\n\n"
+            f"⏳ Processing <b>{index}/{len(lines)}</b>\n"
+            f"✅ Added: <b>{len(added_names)}</b> · ♻️ Existing: <b>{len(duplicate_names)}</b> · ⚠️ Invalid: <b>{len(invalid_rows)}</b>"
+        )
+        await asyncio.sleep(0)
+
+    report = [
+        "<b>PLAYER IMPORT COMPLETE</b>",
+        "",
+        f"✅ Added: <b>{len(added_names)}</b>",
+        f"♻️ Existing cards skipped: <b>{len(duplicate_names)}</b>",
+        f"⚠️ Invalid rows: <b>{len(invalid_rows)}</b>",
+    ]
+    if added_names:
+        report.extend(["", "<b>Added</b>", " · ".join(added_names[:20])])
+    if duplicate_names:
+        report.extend(["", "<b>Skipped as existing</b>", " · ".join(duplicate_names[:20])])
+    if invalid_rows:
+        report.extend(["", "<b>Rows needing correction</b>", *invalid_rows[:10]])
+        if len(invalid_rows) > 10:
+            report.append(f"…and {len(invalid_rows) - 10} more invalid rows.")
+    report.extend(["", "Use /templateguide to review the exact 18-field format."])
+    await progress.edit_text("\n".join(report))
+    await audit(
+        bot,
+        settings,
+        f"Player import by <code>{message.from_user.id}</code>: {len(added_names)} added, {len(duplicate_names)} existing, {len(invalid_rows)} invalid",
+    )
+
+
+def register_admin_handlers(bot: Client, database: MongoDatabase, settings: Settings) -> None:
+    @bot.on_message(filters.command("owner"))
+    async def owner_handler(_: Client, message: Message) -> None:
+        if not _is_private(message):
+            await message.reply_text("Owner controls are available only in the owner's private chat.")
+            return
+        if not _is_owner(message.from_user.id, settings):
+            await message.reply_text("This command is owner-only.")
+            return
+        await message.reply_text(
+            """<b>🛠 OWNER CONTROL ROOM</b>
+
+<b>Private owner commands</b>
+/resetall CONFIRM — permanently clear the bot database
+/players — count player cards
+/addplayer · /addplayers — import player cards
+/addtemplate · /templates · /templateguide — manage card art
+/tplayer — add an original-image special card
+/addcompetition · /addteam · /editteam · /deleteteam — manage arena data
+/mods · /addmod · /removemod — manage moderator access
+
+<b>Group player commands</b>
+/arena · /playcl · /playwc · /playacl · /challenge
+
+Use owner tools in this private chat. Arena and challenge commands belong in groups.""",
+        )
+
+    @bot.on_message(filters.command("resetall"))
+    async def reset_all_handler(_: Client, message: Message) -> None:
+        if not _is_private(message):
+            await message.reply_text("The reset command can only run in the owner's private chat.")
+            return
+        if not _is_owner(message.from_user.id, settings):
+            await message.reply_text("This command is owner-only.")
+            return
+        confirmation = message.text.partition(" ")[2].strip().upper()
+        if confirmation != "CONFIRM":
+            await message.reply_text(
+                "<b>⚠️ RESET ALL</b>\n\n"
+                "This permanently deletes every player, user collection, template, competition, match, challenge, and moderator record.\n\n"
+                "Nothing is deleted yet. To continue, send:\n"
+                "<code>/resetall CONFIRM</code>"
+            )
+            return
+        counts = await database.reset_all()
+        details = " · ".join(f"{name}: {count}" for name, count in counts.items())
+        await message.reply_text(f"<b>DATABASE RESET COMPLETE</b>\n\nDeleted records — {details}")
+        await audit(bot, settings, f"Full database reset by owner <code>{message.from_user.id}</code>: {details}")
+
+    @bot.on_message(filters.command("admin"))
+    async def admin_handler(_: Client, message: Message) -> None:
+        if not _is_private(message):
+            await message.reply_text("Admin controls are available only in private chat.")
+            return
+        if not await _is_admin(message.from_user.id, database, settings):
+            await message.reply_text("This command is for club administrators.")
+            return
+        await message.reply_text(
+            """<b>ADMIN CONTROL ROOM</b>
+
+<b>Player database</b>
+/players
+/addplayer · /addplayers
+
+<b>Card templates</b>
+/addtemplate · /templates · /templateguide
+
+<b>Competitions and teams</b>
+/addcompetition · /addteam · /editteam · /deleteteam
+/tplayer (owner-only photo card)
+
+<b>Access controls</b>
+/mods · /addmod · /removemod
+
+Keep the player database and card artwork separate so new card templates can be added safely later.""",
+        )
+
+    @bot.on_message(filters.command("seedplayers"))
+    async def seed_handler(_: Client, message: Message) -> None:
+        if not _owner_private(message, settings):
+            return
+        await message.reply_text("Seeding is disabled. Add every player and team explicitly with the owner commands.")
+
+    @bot.on_message(filters.command("players"))
+    async def players_handler(_: Client, message: Message) -> None:
+        if not _is_private(message) or not await _is_admin(message.from_user.id, database, settings):
+            return
+        total = await database.players.count_documents({})
+        await message.reply_text(f"<b>PLAYER DATABASE</b>\n\nCards available: <b>{total}</b>")
+
+    @bot.on_message(filters.command("addplayer"))
+    async def add_player_handler(_: Client, message: Message) -> None:
+        if not _is_private(message) or not await _is_admin(message.from_user.id, database, settings):
+            await message.reply_text("This command is for club administrators.")
+            return
+        raw = message.text.partition(" ")[2].strip()
+        await _bulk_import(bot, database, settings, message, raw)
+
+    @bot.on_message(filters.command("addplayers"))
+    async def add_players_handler(_: Client, message: Message) -> None:
+        if not _is_private(message) or not await _is_admin(message.from_user.id, database, settings):
+            return
+        source = message.reply_to_message.text or message.reply_to_message.caption if message.reply_to_message else message.text.partition(" ")[2]
+        await _bulk_import(bot, database, settings, message, source or "")
+
+    @bot.on_message(filters.command("addcompetition"))
+    async def add_competition_handler(_: Client, message: Message) -> None:
+        if not _owner_private(message, settings):
+            return
+        parts = [part.strip() for part in message.text.partition(" ")[2].split("|")]
+        if len(parts) != 4:
+            await message.reply_text(
+                "<b>Competition format</b>\n\n<code>/addcompetition key | Competition name | Emoji | CLUB or NATIONAL</code>\n\nExample:\n<code>/addcompetition copa-libertadores | Copa Libertadores | 🏆 | CLUB</code>"
+            )
+            return
+        key = re.sub(r"[^a-z0-9_-]+", "-", parts[0].lower()).strip("-_")
+        team_type = parts[3].lower()
+        if not key or team_type not in {"club", "national"}:
+            await message.reply_text("Use a simple key and choose either CLUB or NATIONAL.")
+            return
+        created = await database.add_competition(
+            {
+                "competition_key": key,
+                "name": parts[1],
+                "emoji": parts[2] or "🏆",
+                "short_name": key.upper()[:8],
+                "team_type": team_type,
+            }
+        )
+        status = "created" if created else "already exists"
+        await message.reply_text(
+            f"🏆 Competition <b>{parts[1]}</b> {status}.\n\nNow add selectable teams with /addteam.",
+        )
+        await audit(bot, settings, f"Competition {status}: <b>{parts[1]}</b> by <code>{message.from_user.id}</code>")
+
+    @bot.on_message(filters.command("addteam"))
+    async def add_team_handler(_: Client, message: Message) -> None:
+        if not _owner_private(message, settings):
+            return
+        parts = [part.strip() for part in message.text.partition(" ")[2].split("|")]
+        if len(parts) not in {4, 5, 6}:
+            await message.reply_text(
+                "<b>Team format</b>\n\n<code>/addteam competition_key | team-key | Team name | Rating | Emoji | Player names</code>\n\nEmoji and the comma-separated player roster are optional."
+            )
+            return
+        competition_key, team_key, team_name, rating_text = parts[:4]
+        competition = await database.get_competition(competition_key.lower())
+        try:
+            rating = max(1, min(99, int(rating_text)))
+        except ValueError:
+            rating = 75
+        if not competition:
+            await message.reply_text("That competition does not exist. Create it first with /addcompetition.")
+            return
+        team = {
+            "team_key": re.sub(r"[^a-z0-9_-]+", "-", team_key.lower()).strip("-_"),
+            "name": team_name,
+            "rating": rating,
+            "emoji": parts[4] if len(parts) >= 5 and parts[4] else "⚽",
+        }
+        if len(parts) == 6 and parts[5]:
+            names = [name.strip() for name in parts[5].split(",") if name.strip()]
+            roster = await database.players.find({"name": {"$in": names}}).to_list(length=25)
+            team["player_ids"] = [player["player_id"] for player in roster]
+        if not team["team_key"] or not team["name"]:
+            await message.reply_text("A team key and team name are required.")
+            return
+        created = await database.add_competition_team(competition_key.lower(), team)
+        status = "added" if created else "already exists"
+        await message.reply_text(
+            f"⚽ Team <b>{team['name']}</b> {status} in <b>{competition['name']}</b>.",
+        )
+        await audit(bot, settings, f"Competition team {status}: <b>{team['name']}</b> by <code>{message.from_user.id}</code>")
+
+    @bot.on_message(filters.command("editteam"))
+    async def edit_team_handler(_: Client, message: Message) -> None:
+        if not _owner_private(message, settings):
+            return
+        parts = [part.strip() for part in message.text.partition(" ")[2].split("|")]
+        if len(parts) < 3:
+            await message.reply_text("<code>/editteam competition_key | team-key | New name | Rating | Emoji</code>")
+            return
+        competition_key, team_key = parts[:2]
+        updates = {"name": parts[2]}
+        if len(parts) > 3 and parts[3]:
+            try:
+                updates["rating"] = max(1, min(99, int(parts[3])))
+            except ValueError:
+                pass
+        if len(parts) > 4 and parts[4]:
+            updates["emoji"] = parts[4]
+        if len(parts) > 5 and parts[5]:
+            names = [name.strip() for name in parts[5].split(",") if name.strip()]
+            roster = await database.players.find({"name": {"$in": names}}).to_list(length=25)
+            updates["player_ids"] = [player["player_id"] for player in roster]
+        changed = await database.update_competition_team(competition_key.lower(), team_key.lower(), updates)
+        await message.reply_text("Team updated." if changed else "That team was not found.")
+
+    @bot.on_message(filters.command("deleteteam"))
+    async def delete_team_handler(_: Client, message: Message) -> None:
+        if not _owner_private(message, settings):
+            return
+        parts = [part.strip() for part in message.text.partition(" ")[2].split("|")]
+        if len(parts) != 2:
+            await message.reply_text("<code>/deleteteam competition_key | team-key</code>")
+            return
+        deleted = await database.remove_competition_team(parts[0].lower(), parts[1].lower())
+        await message.reply_text("Team deleted." if deleted else "That team was not found.")
+
+    @bot.on_message(filters.command("tplayer"))
+    async def photo_player_handler(_: Client, message: Message) -> None:
+        if not _owner_private(message, settings):
+            return
+        reply = message.reply_to_message
+        name = message.text.partition(" ")[2].strip()
+        if not reply or not reply.photo or not name:
+            await message.reply_text("Reply to a finished card image with <code>/tplayer Player Name</code>.")
+            return
+        player = {
+            "player_id": f"photo-{uuid4().hex[:10]}",
+            "name": name[:60],
+            "nation": "🌐",
+            "club": "Special Edition",
+            "position": "ST",
+            "secondary_positions": ["CF", "ATT"],
+            "rarity": "ICONIC",
+            "ovr": 99,
+            "pace": 99,
+            "shooting": 99,
+            "passing": 99,
+            "dribbling": 99,
+            "defending": 50,
+            "physical": 90,
+            "preferred_foot": "Right",
+            "weak_foot": 5,
+            "skill_moves": 5,
+            "height": "",
+            "traits": ["Special Edition"],
+            "card_photo_file_id": reply.photo.file_id,
+            "created_by": message.from_user.id,
+        }
+        await database.add_player(player)
+        await message.reply_text(f"Photo card <b>{name}</b> added. It will be delivered as the original image without rendering.")
+
+    @bot.on_message(filters.command("addmod"))
+    async def add_mod_handler(_: Client, message: Message) -> None:
+        if not _owner_private(message, settings):
+            await message.reply_text("Only the owner can change moderator access.")
+            return
+        target = message.reply_to_message.from_user if message.reply_to_message else None
+        raw_id = message.text.partition(" ")[2].strip()
+        try:
+            target_id = target.id if target else int(raw_id)
+        except ValueError:
+            await message.reply_text("Reply to a user or provide a numeric Telegram user ID.")
+            return
+        await database.add_mod(target_id, message.from_user.id)
+        await message.reply_text(f"Moderator access granted to <code>{target_id}</code>.")
+        await audit(bot, settings, f"Moderator added: <code>{target_id}</code> by owner <code>{message.from_user.id}</code>")
+
+    @bot.on_message(filters.command("removemod"))
+    async def remove_mod_handler(_: Client, message: Message) -> None:
+        if not _owner_private(message, settings):
+            return
+        raw_id = message.text.partition(" ")[2].strip()
+        target = message.reply_to_message.from_user if message.reply_to_message else None
+        try:
+            target_id = target.id if target else int(raw_id)
+        except ValueError:
+            await message.reply_text("Reply to a user or provide a numeric Telegram user ID.")
+            return
+        await database.remove_mod(target_id)
+        await message.reply_text(f"Moderator access removed from <code>{target_id}</code>.")
+        await audit(bot, settings, f"Moderator removed: <code>{target_id}</code> by owner <code>{message.from_user.id}</code>")
+
+    @bot.on_message(filters.command("mods"))
+    async def mods_handler(_: Client, message: Message) -> None:
+        if not _is_private(message) or not await _is_admin(message.from_user.id, database, settings):
+            return
+        mods = await database.db.admins.find().sort("user_id", 1).to_list(length=100)
+        lines = ["<b>MODERATORS</b>", f"Owner IDs: {', '.join(str(item) for item in settings.owner_ids)}"]
+        lines.extend(f"• <code>{mod['user_id']}</code>" for mod in mods)
+        await message.reply_text("\n".join(lines))
+
+    @bot.on_message(filters.command("templateguide"))
+    async def template_guide_handler(_: Client, message: Message) -> None:
+        if not _is_private(message) or not await _is_admin(message.from_user.id, database, settings):
+            return
+        await message.reply_text(
+            """<b>CARD TEMPLATE GUIDE</b>
+
+<b>Widescreen designer · 2:1 · 1280 × 640</b>
+The supplied red/black stadium artwork is a good direction. Keep the background dark where text sits and leave the portrait area transparent or low contrast.
+
+<b>GK layout coordinates (x, y)</b>
+• OVR: (54, 42) · Position: (54, 122)
+• Nation/club: (54, 176) · Rarity: (1070, 56)
+• Portrait: (370, 88) → (930, 472)
+• Player name: center (650, 506)
+• Club/edition: center (650, 550)
+• PAC / SHO / PAS: (54, 590), (214, 590), (374, 590)
+• DRI / DEF / PHY: (760, 590), (920, 590), (1080, 590)
+
+For CB, use the same 2:1 canvas: move the portrait to (330, 88) → (890, 472), keep the identity at center (640, 506), and use DEF as the visual emphasis. For MID, keep the portrait center and reserve the right side for PAS/DRI. For ATT, reserve the right side for SHO/PAC.
+
+<b>Safe zones</b>
+Keep all text inside x=40..1240 and y=35..615. Use a 16:9 or 2:1 export consistently; this bot preserves a widescreen template's aspect ratio.
+
+Reply to the finished image with:
+<code>/addtemplate gk-wide | GK | RARE | Widescreen 2:1</code>
+
+<b>Bulk player template</b>
+Use one player per line. Each line has exactly 18 pipe-separated fields:
+<code>Name | Nation | Club | Position | Secondary positions | Rarity | OVR | PAC | SHO | PAS | DRI | DEF | PHY | Foot | Weak foot | Skill moves | Height | Traits</code>
+
+You can send one line after <code>/addplayer</code>, or paste many lines after it. You can also send the lines as a separate message and reply to them with <code>/addplayer</code>.
+
+The bot analyzes every row, shows live progress, adds valid new cards, skips duplicates by name + club, and reports invalid rows instead of silently ignoring them.
+
+Example:
+<code>/addplayer Lionel Messi | 🇦🇷 | Inter Miami | ATT | RW,CAM | ICONIC | 97 | 91 | 96 | 97 | 99 | 38 | 70 | Left | 4 | 5 | 170cm | Playmaker,Technical,Dead Ball</code>""",
+        )
+
+    @bot.on_message(filters.command("addtemplate"))
+    async def add_template_handler(_: Client, message: Message) -> None:
+        if not _owner_private(message, settings):
+            await message.reply_text("Only the owner can add the default card templates.")
+            return
+        reply = message.reply_to_message
+        if not reply or not reply.photo:
+            await message.reply_text("Reply to a card image and use <code>/addtemplate ID | POSITION | RARITY | VERSION</code>.")
+            return
+        parts = [part.strip() for part in message.text.partition(" ")[2].split("|")]
+        if len(parts) == 3:
+            parts.insert(1, "ALL")
+        if len(parts) < 4:
+            await message.reply_text("Use <code>/addtemplate ID | POSITION | RARITY | VERSION</code>.")
+            return
+        is_widescreen = "wide" in parts[3].lower() or "2:1" in parts[3] or "16:9" in parts[3]
+        template = {
+            "template_id": parts[0],
+            "position": parts[1].upper(),
+            "rarity": parts[2].upper(),
+            "version": parts[3],
+            "aspect_ratio": "2:1" if is_widescreen else "3:4",
+            "canvas": {"width": 1280, "height": 640} if is_widescreen else {"width": 720, "height": 960},
+            "image_file_id": reply.photo.file_id,
+            "layout": {
+                "rating": "top-left",
+                "nation": "top-right",
+                "portrait": "center",
+                "identity": "lower-center",
+                "stats": "bottom",
+                "traits": "bottom-strip",
+                "coordinates": {
+                    "rating": [54, 42],
+                    "position": [54, 122],
+                    "nation": [54, 176],
+                    "rarity": [1070, 56],
+                    "portrait": [370, 88, 930, 472],
+                    "identity": [650, 506],
+                    "club": [650, 550],
+                    "stats": [54, 590],
+                } if is_widescreen else {},
+            },
+            "created_by": message.from_user.id,
+        }
+        await database.save_template(template)
+        await message.reply_text(f"Template <b>{template['template_id']}</b> saved.")
+        await audit(bot, settings, f"Template added: <b>{template['template_id']}</b> by <code>{message.from_user.id}</code>")
+
+    @bot.on_message(filters.command("templates"))
+    async def templates_handler(_: Client, message: Message) -> None:
+        if not await _is_admin(message.from_user.id, database, settings):
+            return
+        templates = await database.db.templates.find().sort("template_id", 1).to_list(length=100)
+        if not templates:
+            await message.reply_text("No card templates saved yet. Use /templateguide.")
+            return
+        lines = ["<b>CARD TEMPLATES</b>"]
+        lines.extend(f"• <b>{item['template_id']}</b> · {item['rarity']} · {item['version']}" for item in templates)
+        await message.reply_text("\n".join(lines))

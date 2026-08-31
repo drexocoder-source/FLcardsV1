@@ -1,0 +1,523 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+import re
+from typing import Any
+from uuid import uuid4
+
+from motor.motor_asyncio import AsyncIOMotorClient
+
+from .seed import COMPETITIONS, COMPETITION_TEAMS
+
+
+class MongoDatabase:
+    def __init__(self, uri: str, database_name: str) -> None:
+        self.client = AsyncIOMotorClient(uri, serverSelectionTimeoutMS=5000)
+        self.db = self.client[database_name]
+        self.users = self.db.users
+        self.players = self.db.players
+        self.matches = self.db.matches
+        self.competitions = self.db.competitions
+        self.group_games = self.db.group_games
+
+    async def connect(self) -> None:
+        await self.client.admin.command("ping")
+        await self.users.create_index("user_id", unique=True)
+        await self.players.create_index("player_id", unique=True)
+        await self.matches.create_index("created_at")
+        await self.db.challenges.create_index("challenge_id", unique=True)
+        await self.db.admins.create_index("user_id", unique=True)
+        await self.db.templates.create_index("template_id", unique=True)
+        await self.competitions.create_index("competition_key", unique=True)
+        await self.group_games.create_index("chat_id")
+
+    async def close(self) -> None:
+        self.client.close()
+
+    async def reset_all(self) -> dict[str, int]:
+        collections = {
+            "users": self.users,
+            "players": self.players,
+            "matches": self.matches,
+            "competitions": self.competitions,
+            "group_games": self.group_games,
+            "challenges": self.db.challenges,
+            "templates": self.db.templates,
+            "moderators": self.db.admins,
+        }
+        counts: dict[str, int] = {}
+        for name, collection in collections.items():
+            result = await collection.delete_many({})
+            counts[name] = result.deleted_count
+        return counts
+
+    async def seed_mode_catalog(self) -> None:
+        positions = ["GK", "DEF", "DEF", "DEF", "DEF", "MID", "MID", "MID", "ATT", "ATT", "ATT"]
+        for competition_key, (competition_emoji, competition_name, short_name) in COMPETITIONS.items():
+            await self.add_competition(
+                {
+                    "competition_key": competition_key,
+                    "name": competition_name,
+                    "emoji": competition_emoji,
+                    "short_name": short_name,
+                    "team_type": "national" if competition_key == "playwc" else "club",
+                    "seeded": True,
+                }
+            )
+            for team_key, (team_emoji, team_name, rating) in list(COMPETITION_TEAMS[competition_key].items())[:5]:
+                player_ids = []
+                for index, position in enumerate(positions, 1):
+                    player_id = f"mode-{competition_key}-{team_key}-{index}"
+                    player_ids.append(player_id)
+                    await self.players.update_one(
+                        {"player_id": player_id},
+                        {
+                            "$set": {
+                                "player_id": player_id,
+                                "name": f"{team_name} {position} {index}",
+                                "nation": team_emoji if competition_key == "playwc" else "🌐",
+                                "club": team_name,
+                                "position": position,
+                                "secondary_positions": [],
+                                "rarity": "COMPETITION",
+                                "ovr": max(60, min(99, rating + (2 if position == "ATT" else 0))),
+                                "pace": rating,
+                                "shooting": rating if position == "ATT" else max(25, rating - 20),
+                                "passing": rating,
+                                "dribbling": rating,
+                                "defending": rating if position in {"GK", "DEF"} else max(25, rating - 15),
+                                "physical": rating,
+                                "preferred_foot": "Right",
+                                "weak_foot": 3,
+                                "skill_moves": 3,
+                                "height": "",
+                                "traits": ["Competition roster"],
+                                "competition_only": True,
+                                "claimable": False,
+                                "starter_eligible": False,
+                                "updated_at": datetime.now(UTC),
+                            },
+                            "$setOnInsert": {"created_at": datetime.now(UTC)},
+                        },
+                        upsert=True,
+                    )
+                team = {
+                    "team_key": team_key,
+                    "name": team_name,
+                    "rating": rating,
+                    "emoji": team_emoji,
+                    "player_ids": player_ids,
+                    "seeded": True,
+                }
+                competition = await self.get_competition(competition_key)
+                existing = next(
+                    (item for item in (competition or {}).get("teams", []) if item.get("team_key") == team_key),
+                    None,
+                )
+                if existing:
+                    await self.update_competition_team(competition_key, team_key, team)
+                else:
+                    await self.add_competition_team(competition_key, team)
+
+    async def is_healthy(self) -> bool:
+        try:
+            await self.client.admin.command("ping")
+            return True
+        except Exception:
+            return False
+
+    async def get_or_create_user(self, telegram_user: Any) -> dict[str, Any]:
+        now = datetime.now(UTC)
+        user = {
+            "user_id": telegram_user.id,
+            "coins": 5000,
+            "glory": 0,
+            "xp": 0,
+            "collection": [],
+            "squad": [],
+            "formation": "4-3-3",
+            "team_name": "Legacy United",
+            "tactics": "Balanced",
+            "mentality": "Balanced",
+            "substitutes": [],
+            "cooldowns": {},
+            "pending_claim": None,
+            "created_at": now,
+        }
+        await self.users.update_one(
+            {"user_id": telegram_user.id},
+            {
+                "$set": {
+                    "username": telegram_user.username,
+                    "first_name": telegram_user.first_name or "Player",
+                    "updated_at": now,
+                },
+                "$setOnInsert": user,
+            },
+            upsert=True,
+        )
+        return await self.users.find_one({"user_id": telegram_user.id}) or user
+
+    async def get_user(self, user_id: int) -> dict[str, Any] | None:
+        return await self.users.find_one({"user_id": user_id})
+
+    async def add_debut_squad(self, user_id: int) -> list[dict[str, Any]]:
+        wanted = ["GK", "DEF", "DEF", "DEF", "DEF", "MID", "MID", "MID", "ATT", "ATT", "ATT"]
+        existing = await self.users.find_one({"user_id": user_id}) or {}
+        owned = set(existing.get("collection", []))
+        selected: list[dict[str, Any]] = []
+        for position in wanted:
+            player = await self.players.find_one(
+                {
+                    "position": position,
+                    "competition_only": {"$ne": True},
+                    "player_id": {"$nin": list(owned | {p["player_id"] for p in selected})},
+                }
+            )
+            if player:
+                selected.append(player)
+
+        ids = [player["player_id"] for player in selected]
+        await self.users.update_one(
+            {"user_id": user_id},
+            {
+                "$addToSet": {"collection": {"$each": ids}},
+                "$set": {"squad": ids, "formation": "4-3-3", "updated_at": datetime.now(UTC)},
+            },
+        )
+        return selected
+
+    async def claim_candidate(self, user_id: int) -> tuple[dict[str, Any] | None, datetime | None]:
+        user = await self.users.find_one({"user_id": user_id}) or {}
+        last_claim = user.get("cooldowns", {}).get("claim")
+        now = datetime.now(UTC)
+        if last_claim and now - last_claim < timedelta(hours=12):
+            return None, last_claim + timedelta(hours=12)
+
+        owned = user.get("collection", [])
+        pipeline: list[dict[str, Any]] = [
+            {"$match": {"competition_only": {"$ne": True}, "claimable": {"$ne": False}, "player_id": {"$nin": owned}}},
+            {"$sample": {"size": 1}},
+        ]
+        candidate = await self.players.aggregate(pipeline).to_list(length=1)
+        if not candidate:
+            candidate = await self.players.aggregate([{"$sample": {"size": 1}}]).to_list(length=1)
+        if not candidate:
+            return None, None
+
+        player = candidate[0]
+        await self.users.update_one(
+            {"user_id": user_id},
+            {
+                "$set": {
+                    "pending_claim": player["player_id"],
+                    "cooldowns.claim": now,
+                    "updated_at": now,
+                }
+            },
+        )
+        return player, None
+
+    async def retain_pending(self, user_id: int) -> dict[str, Any] | None:
+        user = await self.users.find_one({"user_id": user_id}) or {}
+        player_id = user.get("pending_claim")
+        if not player_id:
+            return None
+        collection = user.get("collection", [])
+        squad = user.get("squad", [])
+        if player_id not in collection:
+            collection.append(player_id)
+        if len(squad) < 25 and player_id not in squad:
+            squad.append(player_id)
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"collection": collection, "squad": squad, "pending_claim": None, "updated_at": datetime.now(UTC)}},
+        )
+        return await self.players.find_one({"player_id": player_id})
+
+    async def release_pending(self, user_id: int) -> dict[str, Any] | None:
+        user = await self.users.find_one({"user_id": user_id}) or {}
+        player_id = user.get("pending_claim")
+        if not player_id:
+            return None
+        player = await self.players.find_one({"player_id": player_id})
+        await self.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"pending_claim": None, "updated_at": datetime.now(UTC)}, "$inc": {"coins": int((player or {}).get("ovr", 50) * 10)}},
+        )
+        return player
+
+    async def get_players(self, ids: list[str]) -> list[dict[str, Any]]:
+        if not ids:
+            return []
+        found = await self.players.find({"player_id": {"$in": ids}}).to_list(length=len(ids))
+        order = {player_id: index for index, player_id in enumerate(ids)}
+        return sorted(found, key=lambda player: order.get(player["player_id"], 999))
+
+    async def search_user_players(self, user_id: int, query: str) -> list[dict[str, Any]]:
+        _, players = await self.get_user_players(user_id)
+        needle = query.casefold()
+        return [
+            player
+            for player in players
+            if needle in player.get("name", "").casefold()
+            or needle in player.get("club", "").casefold()
+            or needle in player.get("position", "").casefold()
+        ]
+
+    async def search_players(self, query: str) -> list[dict[str, Any]]:
+        aliases = {
+            "cr7": "ronaldo",
+            "cristiano": "ronaldo",
+            "lm10": "messi",
+            "leo": "messi",
+            "kdb": "de bruyne",
+        }
+        terms = [aliases.get(term, term) for term in re.findall(r"[a-z0-9À-ÿ]+", query.casefold())]
+        if not terms:
+            return []
+        players = await self.players.find({}).sort("name", 1).to_list(length=5000)
+        matches = []
+        for player in players:
+            searchable = " ".join(
+                [
+                    str(player.get("name", "")),
+                    str(player.get("club", "")),
+                    str(player.get("nation", "")),
+                    str(player.get("position", "")),
+                    " ".join(player.get("secondary_positions", [])),
+                ]
+            ).casefold()
+            if all(term in searchable for term in terms):
+                matches.append(player)
+        return matches
+
+    async def list_players(self, skip: int = 0, limit: int = 20) -> list[dict[str, Any]]:
+        return await self.players.find({}).sort([("competition_only", 1), ("name", 1)]).skip(skip).limit(limit).to_list(length=limit)
+
+    async def count_players(self) -> int:
+        return await self.players.count_documents({})
+
+    async def get_bot_stats(self) -> dict[str, int]:
+        users = await self.users.find({}, {"collection": 1, "coins": 1, "xp": 1}).to_list(length=100000)
+        competitions = await self.competitions.find({}, {"teams": 1}).to_list(length=100)
+        return {
+            "users": len(users),
+            "players": await self.players.count_documents({}),
+            "competition_players": await self.players.count_documents({"competition_only": True}),
+            "collectible_players": await self.players.count_documents({"competition_only": {"$ne": True}}),
+            "collected_cards": sum(len(user.get("collection", [])) for user in users),
+            "coins": sum(int(user.get("coins", 0)) for user in users),
+            "xp": sum(int(user.get("xp", 0)) for user in users),
+            "competitions": len(competitions),
+            "teams": sum(len(item.get("teams", [])) for item in competitions),
+            "templates": await self.db.templates.count_documents({}),
+            "moderators": await self.db.admins.count_documents({}),
+            "active_group_games": await self.group_games.count_documents({"status": {"$in": ["lobby", "setup", "live"]}}),
+            "active_challenges": await self.db.challenges.count_documents({"status": {"$in": ["pending", "setup", "live"]}}),
+        }
+
+    async def get_mod(self, user_id: int) -> dict[str, Any] | None:
+        return await self.db.admins.find_one({"user_id": user_id})
+
+    async def get_user_players(self, user_id: int, squad_only: bool = False) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        user = await self.users.find_one({"user_id": user_id}) or {}
+        ids = user.get("squad" if squad_only else "collection", [])
+        return user, await self.get_players(ids)
+
+    async def update_user(self, user_id: int, updates: dict[str, Any]) -> None:
+        updates["updated_at"] = datetime.now(UTC)
+        await self.users.update_one({"user_id": user_id}, {"$set": updates})
+
+    async def add_player(self, player: dict[str, Any]) -> None:
+        await self.players.update_one(
+            {"player_id": player["player_id"]},
+            {"$set": {**player, "updated_at": datetime.now(UTC)}, "$setOnInsert": {"created_at": datetime.now(UTC)}},
+            upsert=True,
+        )
+
+    async def player_exists(self, name: str, club: str) -> bool:
+        name_pattern = f"^{re.escape(name.strip())}$"
+        club_pattern = f"^{re.escape(club.strip())}$"
+        return bool(
+            await self.players.find_one(
+                {"name": {"$regex": name_pattern, "$options": "i"}, "club": {"$regex": club_pattern, "$options": "i"}},
+                {"_id": 1},
+            )
+        )
+
+    async def add_player_if_new(self, player: dict[str, Any]) -> bool:
+        if await self.player_exists(player["name"], player["club"]):
+            return False
+        await self.add_player(player)
+        return True
+
+    async def add_mod(self, user_id: int, added_by: int, level: int = 1) -> None:
+        await self.db.admins.update_one(
+            {"user_id": user_id},
+            {
+                "$set": {
+                    "user_id": user_id,
+                    "added_by": added_by,
+                    "level": max(1, min(2, level)),
+                    "updated_at": datetime.now(UTC),
+                }
+            },
+            upsert=True,
+        )
+
+    async def remove_mod(self, user_id: int) -> None:
+        await self.db.admins.delete_one({"user_id": user_id})
+
+    async def is_mod(self, user_id: int) -> bool:
+        return bool(await self.db.admins.find_one({"user_id": user_id}))
+
+    async def save_template(self, template: dict[str, Any]) -> None:
+        await self.db.templates.update_one(
+            {"template_id": template["template_id"]},
+            {"$set": {**template, "updated_at": datetime.now(UTC)}, "$setOnInsert": {"created_at": datetime.now(UTC)}},
+            upsert=True,
+        )
+
+    async def get_template(
+        self,
+        rarity: str | None = None,
+        position: str | None = None,
+    ) -> dict[str, Any] | None:
+        query: dict[str, Any] = {}
+        if rarity:
+            query["rarity"] = rarity.upper()
+        if position:
+            query["position"] = position.upper()
+        if position and rarity:
+            exact = await self.db.templates.find_one(query, sort=[("created_at", -1)])
+            if exact:
+                return exact
+            query.pop("position")
+        return await self.db.templates.find_one(query, sort=[("created_at", -1)])
+
+    async def list_competitions(self) -> list[dict[str, Any]]:
+        return await self.competitions.find({}).sort("created_at", 1).to_list(length=100)
+
+    async def get_competition(self, competition_key: str) -> dict[str, Any] | None:
+        return await self.competitions.find_one({"competition_key": competition_key})
+
+    async def add_competition(self, competition: dict[str, Any]) -> bool:
+        result = await self.competitions.update_one(
+            {"competition_key": competition["competition_key"]},
+            {
+                "$setOnInsert": {
+                    **competition,
+                    "teams": [],
+                    "created_at": datetime.now(UTC),
+                }
+            },
+            upsert=True,
+        )
+        return result.upserted_id is not None
+
+    async def add_competition_team(self, competition_key: str, team: dict[str, Any]) -> bool:
+        result = await self.competitions.update_one(
+            {
+                "competition_key": competition_key,
+                "teams.team_key": {"$ne": team["team_key"]},
+            },
+            {"$push": {"teams": team}},
+        )
+        return result.modified_count > 0
+
+    async def update_competition_team(self, competition_key: str, team_key: str, updates: dict[str, Any]) -> bool:
+        result = await self.competitions.update_one(
+            {"competition_key": competition_key, "teams.team_key": team_key},
+            {"$set": {f"teams.$.{key}": value for key, value in updates.items()}},
+        )
+        return result.modified_count > 0
+
+    async def remove_competition_team(self, competition_key: str, team_key: str) -> bool:
+        result = await self.competitions.update_one(
+            {"competition_key": competition_key},
+            {"$pull": {"teams": {"team_key": team_key}}},
+        )
+        return result.modified_count > 0
+
+    async def get_team_players(self, team: dict[str, Any], team_type: str) -> list[dict[str, Any]]:
+        if team.get("player_ids"):
+            players = await self.get_players(team["player_ids"])
+            if players:
+                return players[:25]
+        if team_type == "national":
+            query = {"nation": team.get("emoji", ""), "name": {"$exists": True}}
+        else:
+            query = {"club": team["name"]}
+        return await self.players.find(query).sort("ovr", -1).to_list(length=25)
+
+    async def create_group_game(self, chat_id: int, mode: str, creator: Any) -> dict[str, Any]:
+        game_id = uuid4().hex[:12]
+        game = {
+            "game_id": game_id,
+            "chat_id": chat_id,
+            "mode": mode,
+            "status": "lobby",
+            "host_id": creator.id,
+            "host_name": creator.first_name or "Manager A",
+            "opponent_id": None,
+            "opponent_name": None,
+            "created_at": datetime.now(UTC),
+            "updated_at": datetime.now(UTC),
+        }
+        await self.group_games.insert_one(game)
+        return game
+
+    async def get_active_group_game(self, chat_id: int) -> dict[str, Any] | None:
+        return await self.group_games.find_one(
+            {"chat_id": chat_id, "status": {"$in": ["lobby", "setup", "live"]}},
+            sort=[("created_at", -1)],
+        )
+
+    async def get_group_game(self, game_id: str) -> dict[str, Any] | None:
+        return await self.group_games.find_one({"game_id": game_id})
+
+    async def update_group_game(self, game_id: str, updates: dict[str, Any]) -> None:
+        updates["updated_at"] = datetime.now(UTC)
+        await self.group_games.update_one({"game_id": game_id}, {"$set": updates})
+
+    async def finish_group_game(self, game_id: str, result: dict[str, Any]) -> None:
+        await self.update_group_game(game_id, {"status": "finished", "result": result, "finished_at": datetime.now(UTC)})
+
+    async def update_challenge(self, challenge_id: str, updates: dict[str, Any]) -> None:
+        updates["updated_at"] = datetime.now(UTC)
+        await self.db.challenges.update_one({"challenge_id": challenge_id}, {"$set": updates})
+
+    async def create_challenge(self, challenger: Any, challenged: Any, chat_id: int) -> str:
+        challenge_id = uuid4().hex[:12]
+        await self.db.challenges.insert_one(
+            {
+                "challenge_id": challenge_id,
+                "challenger_id": challenger.id,
+                "challenger_name": challenger.first_name or "Player 1",
+                "challenged_id": challenged.id,
+                "challenged_name": challenged.first_name or "Player 2",
+                "chat_id": chat_id,
+                "status": "pending",
+                "created_at": datetime.now(UTC),
+            }
+        )
+        return challenge_id
+
+    async def get_challenge(self, challenge_id: str) -> dict[str, Any] | None:
+        return await self.db.challenges.find_one({"challenge_id": challenge_id})
+
+    async def get_active_challenge(self, user_id: int) -> dict[str, Any] | None:
+        return await self.db.challenges.find_one(
+            {
+                "$or": [{"challenger_id": user_id}, {"challenged_id": user_id}],
+                "status": {"$in": ["pending", "setup", "live"]},
+            },
+            sort=[("created_at", -1)],
+        )
+
+    async def finish_challenge(self, challenge_id: str, result: dict[str, Any]) -> None:
+        await self.db.challenges.update_one(
+            {"challenge_id": challenge_id},
+            {"$set": {"status": "finished", "result": result, "finished_at": datetime.now(UTC)}},
+        )

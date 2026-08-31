@@ -1,0 +1,30 @@
+services:
+  bot:
+    build: .
+    container_name: fl-cards-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MONGO_URI: ${MONGO_URI:-mongodb://mongo:27017}
+      MONGO_DB_NAME: ${MONGO_DB_NAME:-fl_cards}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+  mongo:
+    image: mongo:7
+    container_name: fl-cards-mongo
+    restart: unless-stopped
+    volumes:
+      - fl_cards_mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  fl_cards_mongo:

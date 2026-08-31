@@ -1,0 +1,70 @@
+Telegram's New Colored Buttons — Full Explanation for Kurigram (Python)
+Telegram's Bot API 9.4 (rolled out ~Feb 2026) added a style field to both InlineKeyboardButton and KeyboardButton, plus an icon_custom_emoji_id field. That's the "colourful button" feature you're referring to.
+What it does
+style colors the button background: "primary" (blue), "success" (green), "danger" (red). Omit it → default theme color.
+icon_custom_emoji_id shows a custom emoji before the button text.
+Only one style can be set per button, and it's purely visual — it doesn't change button behavior (callback_data, url, etc. still work exactly the same).
+Under the hood (MTProto, which is what Kurigram actually talks to), this maps to a keyboardButtonStyle constructor with flags bg_primary / bg_danger / bg_success / icon, attached to any button type.
+How to use it in Kurigram
+python
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+app = Client("my_bot", bot_token="YOUR_BOT_TOKEN")
+
+@app.on_message(filters.command("start"))
+async def start(client, message):
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Approve",
+                    callback_data="approve",
+                    style="success"          # green button
+                ),
+                InlineKeyboardButton(
+                    "❌ Reject",
+                    callback_data="reject",
+                    style="danger"            # red button
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "ℹ️ Details",
+                    callback_data="details",
+                    style="primary"           # blue button
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "Custom Emoji Button",
+                    callback_data="custom",
+                    icon_custom_emoji_id="5368324170671202286"  # premium custom emoji
+                ),
+            ],
+        ]
+    )
+    await message.reply_text("Pick an action:", reply_markup=keyboard)
+
+@app.on_callback_query()
+async def on_click(client, query):
+    await query.answer(f"You pressed: {query.data}")
+
+app.run()
+Same idea works for reply keyboards with KeyboardButton(text, style="danger").
+Important — verify your installed version supports it first
+Kurigram moves fast to track new Telegram features, but parameter support depends on the exact version you have installed. Before relying on the above:
+bash
+pip install -U kurigram   # get the latest version
+python
+from pyrogram.types import InlineKeyboardButton
+import inspect
+print(inspect.signature(InlineKeyboardButton.__init__))
+If style and icon_custom_emoji_id show up in that signature, you're good to go with the code above. If they don't yet (your installed version predates this feature), you have two fallbacks:
+Upgrade — this is the simplest fix, since Kurigram's whole selling point is fast-following Telegram updates.
+Raw API fallback (if a stable release hasn't shipped it yet): build the button using Kurigram's raw.types.KeyboardButtonCallback combined with raw.types.KeyboardButtonStyle(bg_success=True) via raw.types.ReplyInlineMarkup, then call invoke() directly. This is more advanced — only needed if the high-level wrapper is missing the field.
+Notes
+Some style/icon options require the bot to have purchased a Fragment username or the message sender to have Telegram Premium — this is a Telegram-side restriction, not a Kurigram limitation.
+Only one of bg_primary/bg_success/bg_danger can be true at once (i.e., one style value, not multiple).
+This is a display-only enhancement — your callback/URL/logic code doesn't need any changes.
+If you tell me what kurigram version you're on (pip show kurigram), I can confirm exactly whether style is available for you or if you need the raw-API workaround.
