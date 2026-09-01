@@ -9,8 +9,9 @@ from pathlib import Path
 from datetime import UTC, datetime
 
 from pyrogram import Client, filters
-from pyrogram.enums import ButtonStyle
-from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from pyrogram.enums import ButtonStyle, MessageEntityType, ParseMode
+from pyrogram.parser import Parser
+from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, MessageEntity
 
 from database.mongo import MongoDatabase
 from config import Settings
@@ -31,6 +32,27 @@ _TEMPLATE_CACHE_DIR = Path("/tmp/fl-card-templates")
 _TEMPLATE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _TEMPLATE_DOWNLOAD_LOCK = asyncio.Lock()
 MAX_PLAYER_SEARCH_RESULTS = 24
+
+PREMIUM_EMOJI_IDS = {
+    "👤": "5408846628763217930",
+    "🏟": "5195426924981154277",
+    "❔": "5452061640507803327",
+    "⚽️": "5875210601717830561",
+    "⚽": "5875210601717830561",
+    "⭐️": "5895511022340411227",
+    "⭐": "5895511022340411227",
+    "⚡️": "5852800639188341430",
+    "⚡": "5852800639188341430",
+    "🎯": "6125218994455582617",
+    "🧠": "5237799019329105246",
+    "✨": "5451636889717062286",
+    "🛡": "5251203410396458957",
+    "🛡️": "5251203410396458957",
+    "💪": "5427342093674630148",
+    "🔹": "5971895400792067820",
+    "💰": "6278294652541996868",
+    "💎": "5471952986970267163",
+}
 
 FORMATIONS = {
     "4-3-3": 1,
@@ -75,19 +97,19 @@ def card_text(player: dict, claimed_by: str | None = None) -> str:
     owner_line = f"👤 Claimed by: {claimed_by}\n\n" if claimed_by else ""
     edition = str(player.get("edition", "")).strip()
     card_type_line = (
-        f"🎖 Edition: <b>{html.escape(edition)}</b>"
+        f"❔ Edition: <b>{html.escape(edition)}</b>"
         if edition
-        else f"🎴 Rarity: <b>{player.get('rarity', 'COMMON')}</b>"
+        else f"❔ Rarity: <b>{player.get('rarity', 'COMMON')}</b>"
     )
     return f"""<b>PLAYER CARD</b>
 
 {owner_line}{player.get('nation', '🌐')} <b>{player['name']}</b>
 🏟 Club: {player.get('club', 'Free Agent')}
 {card_type_line}
-🧤 Position: <b>{player.get('position', 'MID')}</b>
-⭐ OVR: <b>{player.get('ovr', 0)}</b>
+⚽️ Position: <b>{player.get('position', 'MID')}</b>
+⭐️ OVR: <b>{player.get('ovr', 0)}</b>
 
-⚡ PAC  {player.get('pace', 0):>2}    🎯 SHO  {player.get('shooting', 0):>2}
+⚡️ PAC  {player.get('pace', 0):>2}    🎯 SHO  {player.get('shooting', 0):>2}
 🧠 PAS  {player.get('passing', 0):>2}    ✨ DRI  {player.get('dribbling', 0):>2}
 🛡 DEF  {player.get('defending', 0):>2}    💪 PHY  {player.get('physical', 0):>2}
 
@@ -102,6 +124,52 @@ def _search_token(query: str) -> str:
 def _search_query(token: str) -> str:
     padded = token + "=" * (-len(token) % 4)
     return base64.urlsafe_b64decode(padded.encode()).decode()
+
+
+def _utf16_length(value: str) -> int:
+    return len(value.encode("utf-16-le")) // 2
+
+
+async def _premium_text_entities(text: str) -> tuple[str, list[MessageEntity]]:
+    parsed = await Parser(None).parse(text, ParseMode.HTML)
+    clean_text = parsed["message"]
+    entities = [
+        await MessageEntity._parse(None, entity, {})
+        for entity in (parsed["entities"] or [])
+    ]
+
+    matches: list[tuple[int, int, str]] = []
+    occupied: list[tuple[int, int]] = []
+    for symbol, custom_emoji_id in sorted(PREMIUM_EMOJI_IDS.items(), key=lambda item: -len(item[0])):
+        start = clean_text.find(symbol)
+        while start >= 0:
+            end = start + len(symbol)
+            if not any(start < occupied_end and end > occupied_start for occupied_start, occupied_end in occupied):
+                matches.append((start, end, custom_emoji_id))
+                occupied.append((start, end))
+            start = clean_text.find(symbol, start + len(symbol))
+
+    for start, end, custom_emoji_id in matches:
+        entities.append(
+            MessageEntity(
+                type=MessageEntityType.CUSTOM_EMOJI,
+                offset=_utf16_length(clean_text[:start]),
+                length=_utf16_length(clean_text[start:end]),
+                custom_emoji_id=custom_emoji_id,
+            )
+        )
+    entities.sort(key=lambda entity: (entity.offset, -entity.length))
+    return clean_text, entities
+
+
+async def _reply_premium_text(message: Message, text: str, reply_markup=None) -> None:
+    clean_text, entities = await _premium_text_entities(text)
+    await message.reply_text(
+        clean_text,
+        parse_mode=ParseMode.DISABLED,
+        entities=entities,
+        reply_markup=reply_markup,
+    )
 
 
 def _card_type_text(player: dict) -> str:
@@ -122,10 +190,10 @@ def _player_search_text(query: str, results: list[dict]) -> str:
     ]
     for index, player in enumerate(results, 1):
         lines.append(
-            f"{index}. <b>{html.escape(str(player.get('name', 'Unknown')))}</b>"
-            f" · {html.escape(str(player.get('club', 'Free Agent')))}"
-            f" · OVR <b>{player.get('ovr', 0)}</b>"
-            f" · {html.escape(_card_type_text(player))}"
+            f"{index}. ⚽️ <b>{html.escape(str(player.get('name', 'Unknown')))}</b>"
+            f" · 🏟 {html.escape(str(player.get('club', 'Free Agent')))}"
+            f" · ⭐️ <b>{player.get('ovr', 0)}</b>"
+            f" · ❔ {html.escape(_card_type_text(player))}"
         )
     lines.extend(["", "Tap a card below to open its full card."])
     return "\n".join(lines)
@@ -302,11 +370,17 @@ async def _send_card(
     player: dict,
     caption: str | None = None,
     reply_markup=None,
+    premium_caption: bool = False,
 ) -> None:
+    caption_text = caption or card_text(player)
+    caption_entities = None
+    if premium_caption:
+        caption_text, caption_entities = await _premium_text_entities(caption_text)
     if player.get("card_photo_file_id"):
         await message.reply_photo(
             photo=player["card_photo_file_id"],
-            caption=caption or card_text(player),
+            caption=caption_text,
+            caption_entities=caption_entities,
             reply_markup=reply_markup,
         )
         return
@@ -314,7 +388,8 @@ async def _send_card(
     try:
         await message.reply_photo(
             photo=card_path,
-            caption=caption or card_text(player),
+            caption=caption_text,
+            caption_entities=caption_entities,
             reply_markup=reply_markup,
         )
     finally:
@@ -366,7 +441,15 @@ def register_collection_handlers(bot: Client, database: MongoDatabase, settings:
 💎 Market value: <b>{player.get('ovr', 0) * 100_000:,}</b>
 
 Choose what happens to this card:"""
-        await _send_card(bot, database, message, player, caption=text, reply_markup=claim_keyboard())
+        await _send_card(
+            bot,
+            database,
+            message,
+            player,
+            caption=text,
+            reply_markup=claim_keyboard(),
+            premium_caption=True,
+        )
 
     @bot.on_message(filters.command("shop"))
     async def shop_handler(_: Client, message: Message) -> None:
@@ -468,7 +551,8 @@ Choose what happens to this card:"""
             return
         results = results[:MAX_PLAYER_SEARCH_RESULTS]
         token = _search_token(search)
-        await message.reply_text(
+        await _reply_premium_text(
+            message,
             _player_search_text(search, results),
             reply_markup=_player_results_keyboard(token, results),
         )
@@ -587,6 +671,7 @@ Choose what happens to this card:"""
 
 Choose what happens to this card:""",
                     claim_keyboard(),
+                    True,
                 )
             else:
                 await query.message.edit_text(
@@ -630,7 +715,7 @@ Choose what happens to this card:""",
             player_id = user.get("pending_claim")
             player = (await database.get_players([player_id]))[0] if player_id else None
             if player:
-                await _send_card(bot, database, query.message, player)
+                await _send_card(bot, database, query.message, player, premium_caption=True)
             else:
                 await query.message.edit_text("This claim is no longer available.")
             return
@@ -648,7 +733,7 @@ Choose what happens to this card:""",
         except (ValueError, UnicodeDecodeError, binascii.Error):
             await query.answer("That search has expired.", show_alert=True)
             return
-        results = await database.search_players(search)
+        results = (await database.search_players(search))[:MAX_PLAYER_SEARCH_RESULTS]
         if not results or page < 0 or page >= len(results):
             await query.answer("That player page is no longer available.", show_alert=True)
             return
@@ -665,6 +750,7 @@ Choose what happens to this card:""",
             player,
             caption=_player_caption(player, search, page, len(results)),
             reply_markup=_player_card_keyboard(token),
+            premium_caption=True,
         )
 
     @bot.on_callback_query(filters.regex(r"^playerresults:[A-Za-z0-9_-]+$"))
@@ -675,7 +761,7 @@ Choose what happens to this card:""",
         except (ValueError, UnicodeDecodeError, binascii.Error):
             await query.answer("That search has expired.", show_alert=True)
             return
-        results = await database.search_players(search)
+        results = (await database.search_players(search))[:MAX_PLAYER_SEARCH_RESULTS]
         if not results:
             await query.answer("That search has expired.", show_alert=True)
             return
@@ -684,7 +770,8 @@ Choose what happens to this card:""",
             await query.message.delete()
         except Exception:
             pass
-        await query.message.reply_text(
+        await _reply_premium_text(
+            query.message,
             _player_search_text(search, results),
             reply_markup=_player_results_keyboard(token, results),
         )
