@@ -16,7 +16,15 @@ from database.mongo import MongoDatabase
 from config import Settings
 from services.cards import render_player_card
 
-from .ui import back_keyboard, claim_keyboard, shop_button, shop_keyboard, shop_text
+from .ui import (
+    back_keyboard,
+    claim_keyboard,
+    shop_button,
+    shop_keyboard,
+    shop_pack_keyboard,
+    shop_pack_text,
+    shop_text,
+)
 
 
 _TEMPLATE_CACHE_DIR = Path("/tmp/fl-card-templates")
@@ -64,11 +72,17 @@ def player_line(player: dict) -> str:
 def card_text(player: dict, claimed_by: str | None = None) -> str:
     traits = " · ".join(player.get("traits", [])) or "Complete Footballer"
     owner_line = f"👤 Claimed by: {claimed_by}\n\n" if claimed_by else ""
+    edition = str(player.get("edition", "")).strip()
+    card_type_line = (
+        f"🎖 Edition: <b>{html.escape(edition)}</b>"
+        if edition
+        else f"🎴 Rarity: <b>{player.get('rarity', 'COMMON')}</b>"
+    )
     return f"""<b>PLAYER CARD</b>
 
 {owner_line}{player.get('nation', '🌐')} <b>{player['name']}</b>
 🏟 Club: {player.get('club', 'Free Agent')}
-🎴 Rarity: <b>{player.get('rarity', 'COMMON')}</b>
+{card_type_line}
 🧤 Position: <b>{player.get('position', 'MID')}</b>
 ⭐ OVR: <b>{player.get('ovr', 0)}</b>
 
@@ -183,7 +197,13 @@ async def _render_card(bot: Client, database: MongoDatabase, player: dict) -> st
         str(player.get("position", "MID")).upper(),
     ]
     for template_position in template_positions:
-        template = await database.get_template(player.get("rarity"), template_position)
+        if player.get("edition"):
+            template = await database.get_template(
+                position=template_position,
+                edition=player.get("edition"),
+            )
+        else:
+            template = await database.get_template(player.get("rarity"), template_position)
         if template:
             break
     if template and template.get("image_file_id"):
@@ -321,6 +341,31 @@ Choose what happens to this card:"""
             reply_markup=shop_keyboard(packs),
         )
 
+    @bot.on_callback_query(filters.regex(r"^shop:rarity:(COMMON|RARE|EPIC|ELITE|LEGENDARY)$"))
+    async def shop_rarity_handler(_: Client, query: CallbackQuery) -> None:
+        pack_key = query.data.split(":")[-1]
+        packs = await database.get_shop_packs()
+        pack = packs.get(pack_key)
+        if not pack:
+            await query.answer("That pack is unavailable.", show_alert=True)
+            return
+        user = await database.get_user(query.from_user.id) or {}
+        await query.answer()
+        await query.message.edit_text(
+            shop_pack_text(pack, int(user.get("coins", 0))),
+            reply_markup=shop_pack_keyboard(pack_key, pack),
+        )
+
+    @bot.on_callback_query(filters.regex(r"^shop:back$"))
+    async def shop_back_handler(_: Client, query: CallbackQuery) -> None:
+        packs = await database.get_shop_packs()
+        user = await database.get_user(query.from_user.id) or {}
+        await query.answer()
+        await query.message.edit_text(
+            shop_text(int(user.get("coins", 0)), packs),
+            reply_markup=shop_keyboard(packs),
+        )
+
     @bot.on_callback_query(filters.regex(r"^shop:buy:(COMMON|RARE|EPIC|ELITE|LEGENDARY):([1-3])$"))
     async def shop_purchase_handler(_: Client, query: CallbackQuery) -> None:
         _, _, pack_key, quantity_text = query.data.split(":")
@@ -330,20 +375,32 @@ Choose what happens to this card:"""
             await query.answer("Purchase unavailable.", show_alert=True)
             user = await database.get_user(query.from_user.id) or {}
             packs = await database.get_shop_packs()
-            text = shop_text(int(user.get("coins", 0)), packs) + f"\n\n⚠️ {result['reason']}"
+            pack = packs.get(result.get("pack_key", pack_key), packs.get(pack_key))
+            text = (
+                shop_pack_text(pack, int(user.get("coins", 0))) + f"\n\n⚠️ {result['reason']}"
+                if pack
+                else shop_text(int(user.get("coins", 0)), packs) + f"\n\n⚠️ {result['reason']}"
+            )
             try:
-                await query.message.edit_text(text, reply_markup=shop_keyboard(packs))
+                await query.message.edit_text(
+                    text,
+                    reply_markup=shop_pack_keyboard(pack_key, pack) if pack else shop_keyboard(packs),
+                )
             except Exception:
-                await query.message.edit_caption(caption=text, reply_markup=shop_keyboard(packs))
+                await query.message.edit_caption(
+                    caption=text,
+                    reply_markup=shop_pack_keyboard(pack_key, pack) if pack else shop_keyboard(packs),
+                )
             return
 
         await query.answer("Pack opened.")
         packs = await database.get_shop_packs()
         result_text = _pack_result_text(result)
+        pack = packs.get(pack_key)
         try:
-            await query.message.edit_text(result_text, reply_markup=shop_keyboard(packs))
+            await query.message.edit_text(result_text, reply_markup=shop_pack_keyboard(pack_key, pack) if pack else shop_keyboard(packs))
         except Exception:
-            await query.message.edit_caption(caption=result_text, reply_markup=shop_keyboard(packs))
+            await query.message.edit_caption(caption=result_text, reply_markup=shop_pack_keyboard(pack_key, pack) if pack else shop_keyboard(packs))
         for index, player in enumerate(result["cards"], 1):
             await _send_card(
                 bot,
@@ -351,21 +408,8 @@ Choose what happens to this card:"""
                 query.message,
                 player,
                 caption=f"<b>PACK CARD {index}/{result['quantity']}</b>\n\n{card_text(player)}",
-                reply_markup=shop_keyboard(packs),
+                reply_markup=shop_pack_keyboard(pack_key, pack) if pack else shop_keyboard(packs),
             )
-
-    @bot.on_callback_query(filters.regex(r"^shop:info:(COMMON|RARE|EPIC|ELITE|LEGENDARY)$"))
-    async def shop_info_handler(_: Client, query: CallbackQuery) -> None:
-        pack_key = query.data.split(":")[-1]
-        packs = await database.get_shop_packs()
-        pack = packs.get(pack_key)
-        if not pack:
-            await query.answer("That pack is unavailable.", show_alert=True)
-            return
-        await query.answer(
-            f"{pack['name']}: {pack['price']:,} coins each. Choose ×1, ×2, or ×3 below.",
-            show_alert=True,
-        )
 
     @bot.on_message(filters.command("collection"))
     async def collection_handler(_: Client, message: Message) -> None:

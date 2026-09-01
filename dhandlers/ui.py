@@ -17,33 +17,46 @@ def shop_text(coins: int = 0, packs: dict | None = None) -> str:
         "",
         f"🪙 Your balance: <b>{coins:,} coins</b>",
         "",
-        "Each pack gives one random collectible card. Choose a pack below, then buy ×1, ×2, or ×3.",
-        "Lower rarity and lower OVR cards are more likely; stronger cards can still drop.",
+        "Each pack gives one random collectible card. Choose a rarity to view its price and drop odds.",
+        "You can buy ×1, ×2, or ×3 packs from the rarity page.",
         "",
     ]
-    for pack_key, pack in packs.items():
-        drops = ", ".join(f"{rarity.title()} {weight}%" for rarity, weight in pack["drops"].items())
-        lines.append(f"{pack['emoji']} <b>{pack['name']}</b> · <b>{pack['price']:,}</b> coins")
-        lines.append(f"Drop odds: {drops}")
-        lines.append("")
-    lines.append("<b>Choose quantity</b>")
+    lines.append("<b>Choose pack rarity</b>")
     return "\n".join(lines)
 
 
 def shop_keyboard(packs: dict | None = None) -> InlineKeyboardMarkup:
     packs = packs or SHOP_PACKS
-    rows = []
-    for pack_key, pack in packs.items():
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    f"{pack['emoji']} {pack['name']}",
-                    callback_data=f"shop:info:{pack_key}",
-                    style=ButtonStyle.PRIMARY,
-                )
-            ]
-        )
-        rows.append(
+    pack_items = list(packs.items())
+    rows = [
+        [
+            InlineKeyboardButton(
+                f"{pack['emoji']} {key.title()}",
+                callback_data=f"shop:rarity:{key}",
+                style=ButtonStyle.SUCCESS if index == 0 else ButtonStyle.PRIMARY,
+            )
+            for key, pack in pack_items[index:index + 2]
+        ]
+        for index in range(0, len(pack_items), 2)
+    ]
+    rows.append([InlineKeyboardButton("🏠 Home", callback_data="menu:home", style=ButtonStyle.PRIMARY)])
+    return InlineKeyboardMarkup(rows)
+
+
+def shop_pack_text(pack: dict, coins: int = 0) -> str:
+    drops = ", ".join(f"{rarity.title()} {weight}%" for rarity, weight in pack["drops"].items())
+    return (
+        f"<b>{pack['emoji']} {pack['name']}</b>\n\n"
+        f"🪙 Your balance: <b>{coins:,} coins</b>\n"
+        f"💸 Price: <b>{pack['price']:,} coins</b> per pack\n"
+        f"🎲 Drop odds: {drops}\n\n"
+        "Lower OVR cards are more likely within each rarity. Choose a quantity:"
+    )
+
+
+def shop_pack_keyboard(pack_key: str, pack: dict) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
             [
                 InlineKeyboardButton(
                     f"×{quantity} · {pack['price'] * quantity:,}",
@@ -51,10 +64,11 @@ def shop_keyboard(packs: dict | None = None) -> InlineKeyboardMarkup:
                     style=ButtonStyle.SUCCESS if quantity == 1 else ButtonStyle.PRIMARY,
                 )
                 for quantity in (1, 2, 3)
-            ]
-        )
-    rows.append([InlineKeyboardButton("🏠 Home", callback_data="menu:home", style=ButtonStyle.PRIMARY)])
-    return InlineKeyboardMarkup(rows)
+            ],
+            [InlineKeyboardButton("↩️ Choose rarity", callback_data="shop:back", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton("🏠 Home", callback_data="menu:home", style=ButtonStyle.PRIMARY)],
+        ]
+    )
 
 
 def menu_keyboard(owner_id: int = 8186068163) -> InlineKeyboardMarkup:
@@ -103,7 +117,6 @@ def claim_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("RELEASE", callback_data="claim:release", style=ButtonStyle.DANGER),
             ],
             [InlineKeyboardButton("VIEW CARD", callback_data="claim:view", style=ButtonStyle.PRIMARY)],
-            [shop_button()],
         ]
     )
 

@@ -403,12 +403,8 @@ def _render_with_template(
 def _render_generic(
     player: dict[str, Any],
 ) -> str:
-    rarity = str(
-        player.get(
-            "rarity",
-            "RARE",
-        )
-    ).upper()
+    rarity = str(player.get("rarity", "RARE") or "RARE").upper()
+    card_label = str(player.get("edition") or rarity).upper()
 
     start, end = _rarity_colors(rarity)
 
@@ -488,7 +484,7 @@ def _render_generic(
     # -----------------------------------------------------------------------
     draw.text(
         (WIDTH - 180, 84),
-        rarity,
+        card_label,
         fill=soft,
         font=small_font,
     )

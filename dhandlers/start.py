@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pyrogram import Client, filters
+from pyrogram.enums import ChatType
 from pyrogram.types import CallbackQuery, Message
 
 from database.mongo import MongoDatabase
@@ -59,7 +60,7 @@ Football Legacy Manager keeps player data, card artwork, clubs, and match compet
 The Developer button opens the owner account directly.
 
 Owner command scopes:
-• Private chat: /owner, /resetall, player/card administration
+• Private chat: /owner, /resetall, /resetuser, player/card administration
 • Groups: /addcompetition, /addteam, /editteam, /deleteteam
 
 Use /owner for the complete owner control list."""
@@ -74,6 +75,13 @@ Competition matches use owner-created fixed team rosters. Managers choose condit
 def register_start_handlers(bot: Client, database: MongoDatabase, settings: Settings) -> None:
     @bot.on_message(filters.command("start"))
     async def start_handler(_: Client, message: Message) -> None:
+        if message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+            await message.reply_text(
+                "👋 Welcome to Fʟ | Cᴀʀᴅs!\n\n"
+                "Please DM me and send <code>/start</code> to create and manage your club. "
+                "Group commands such as /arena, /challenge, and /players are available here after setup."
+            )
+            return
         is_new = await database.get_user(message.from_user.id) is None
         await database.get_or_create_user(message.from_user)
         if is_new:

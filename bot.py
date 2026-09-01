@@ -39,6 +39,7 @@ GENERAL_COMMANDS = [
 ]
 
 GROUP_COMMANDS = GENERAL_COMMANDS + [
+    BotCommand("players", "Browse player cards (admin)"),
     BotCommand("arena", "Open group competitions"),
     BotCommand("playcl", "Choose a Champions League club"),
     BotCommand("playucl", "Choose a Champions League club"),
@@ -50,6 +51,7 @@ GROUP_COMMANDS = GENERAL_COMMANDS + [
 OWNER_COMMANDS = GENERAL_COMMANDS + [
     BotCommand("owner", "Open owner controls"),
     BotCommand("resetall", "Permanently clear all bot data"),
+    BotCommand("resetuser", "Reset one user's stats"),
     BotCommand("admin", "Open administrator tools"),
     BotCommand("addplayer", "Add one or many player cards"),
     BotCommand("addplayers", "Bulk import player cards"),
@@ -57,6 +59,7 @@ OWNER_COMMANDS = GENERAL_COMMANDS + [
     BotCommand("botinfo", "Show bot statistics"),
     BotCommand("shopprice", "Edit card pack prices"),
     BotCommand("addtemplate", "Save a card template"),
+    BotCommand("template", "Save a limited edition template"),
     BotCommand("templates", "List saved card templates"),
     BotCommand("templateguide", "View the card template guide"),
     BotCommand("addcompetition", "Create a competition"),
@@ -64,6 +67,7 @@ OWNER_COMMANDS = GENERAL_COMMANDS + [
     BotCommand("editteam", "Edit an owner-created team"),
     BotCommand("deleteteam", "Delete an owner-created team"),
     BotCommand("tplayer", "Create an owner photo card"),
+    BotCommand("editionplayer", "Add a limited edition player"),
     BotCommand("testms", "Generate a test football match summary"),
     BotCommand("mods", "List moderators"),
     BotCommand("addmod", "Grant moderator access"),

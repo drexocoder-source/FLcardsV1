@@ -61,6 +61,37 @@ class MongoDatabase:
             counts[name] = result.deleted_count
         return counts
 
+    async def reset_user_stats(self, user_id: int) -> bool:
+        """Reset one manager's game progress while keeping their account identity."""
+        result = await self.users.update_one(
+            {"user_id": user_id},
+            {
+                "$set": {
+                    "coins": 5000,
+                    "glory": 0,
+                    "xp": 0,
+                    "collection": [],
+                    "squad": [],
+                    "formation": "4-3-3",
+                    "team_name": "Legacy United",
+                    "tactics": "Balanced",
+                    "mentality": "Balanced",
+                    "substitutes": [],
+                    "cooldowns": {},
+                    "pending_claim": None,
+                    "updated_at": datetime.now(UTC),
+                },
+                "$unset": {
+                    "matches_played": "",
+                    "wins": "",
+                    "draws": "",
+                    "losses": "",
+                    "match_coins_earned": "",
+                },
+            },
+        )
+        return result.modified_count == 1
+
     async def seed_mode_catalog(self) -> None:
         for competition_key, (competition_emoji, competition_name, short_name) in COMPETITIONS.items():
             await self.add_competition(
@@ -552,9 +583,11 @@ class MongoDatabase:
         self,
         rarity: str | None = None,
         position: str | None = None,
+        edition: str | None = None,
     ) -> dict[str, Any] | None:
         position = position.upper() if position else None
         rarity = rarity.upper() if rarity else None
+        edition = edition.upper() if edition else None
         groups = {
             "GK": "GK",
             "CB": "DEF", "LB": "DEF", "RB": "DEF", "LWB": "DEF", "RWB": "DEF", "DEF": "DEF",
@@ -566,11 +599,15 @@ class MongoDatabase:
             positions = ["ALL"]
         for candidate_position in positions + ["ALL"]:
             query: dict[str, Any] = {"position": candidate_position}
-            if rarity:
+            if edition:
+                query["edition"] = edition
+            elif rarity:
                 query["rarity"] = rarity
             template = await self.db.templates.find_one(query, sort=[("created_at", -1)])
             if template:
                 return template
+        if edition:
+            return await self.db.templates.find_one({"edition": edition}, sort=[("created_at", -1)])
         if rarity:
             return await self.db.templates.find_one({"rarity": rarity}, sort=[("created_at", -1)])
         return await self.db.templates.find_one({}, sort=[("created_at", -1)])

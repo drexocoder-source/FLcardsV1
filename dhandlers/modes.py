@@ -76,8 +76,8 @@ LIVE_ACTIONS = (
 
 # Bonus reward on top of the base match payout, applied to the winner (and
 # halved for a draw). Losers keep only the base participation reward.
-WIN_BONUS_MIN_COINS = 10
-WIN_BONUS_MAX_COINS = 50
+WIN_BONUS_MIN_COINS = 30
+WIN_BONUS_MAX_COINS = 120
 WIN_BONUS_XP = 50
 
 

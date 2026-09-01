@@ -39,8 +39,35 @@ def _is_private(message: Message) -> bool:
     return chat_type == ChatType.PRIVATE or str(chat_type).lower().split(".")[-1] == "private"
 
 
+def _is_group_chat(message: Message) -> bool:
+    chat_type = message.chat.type
+    return chat_type in (ChatType.GROUP, ChatType.SUPERGROUP) or str(chat_type).lower().split(".")[-1] in {
+        "group",
+        "supergroup",
+    }
+
+
 def _owner_private(message: Message, settings: Settings) -> bool:
     return _is_private(message) and _is_owner(message.from_user.id, settings)
+
+
+def _reset_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("🧨 Reset entire database", callback_data="reset:all", style=ButtonStyle.DANGER)],
+            [InlineKeyboardButton("👤 Reset one user's stats", callback_data="reset:user", style=ButtonStyle.PRIMARY)],
+            [InlineKeyboardButton("Cancel", callback_data="reset:cancel", style=ButtonStyle.SUCCESS)],
+        ]
+    )
+
+
+def _reset_all_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("🛑 Confirm full reset", callback_data="reset:all_confirm", style=ButtonStyle.DANGER),
+            InlineKeyboardButton("Cancel", callback_data="reset:cancel", style=ButtonStyle.SUCCESS),
+        ]]
+    )
 
 
 def _admin_page_keyboard(page: int, total: int, page_size: int) -> InlineKeyboardMarkup | None:
@@ -203,12 +230,12 @@ def register_admin_handlers(bot: Client, database: MongoDatabase, settings: Sett
 
 <b>Private owner commands</b>
 /resetall CONFIRM — permanently clear the bot database
-/players — browse every player card
+/players — browse every player card (private or group)
 /botinfo — show bot-wide statistics
 /addplayer · /addplayers — import player cards
-/addtemplate · /templates · /templateguide — manage card art
+/addtemplate · /template · /templates · /templateguide — manage card art
 /shopprice — edit card pack prices
-/tplayer — add an original-image special card
+/tplayer · /editionplayer — add special/limited cards
 /addcompetition · /addteam · /editteam · /deleteteam — manage arena data
 /mods · /addmod · /removemod — manage level 1/2 moderator access
 
@@ -231,14 +258,73 @@ Use owner tools in this private chat. Arena and challenge commands belong in gro
             await message.reply_text(
                 "<b>⚠️ RESET ALL</b>\n\n"
                 "This permanently deletes every player, user collection, template, competition, match, challenge, and moderator record.\n\n"
-                "Nothing is deleted yet. To continue, send:\n"
-                "<code>/resetall CONFIRM</code>"
+                "Nothing is deleted yet. Choose an option below, or send:\n"
+                "<code>/resetall CONFIRM</code>",
+                reply_markup=_reset_menu_keyboard(),
             )
             return
         counts = await database.reset_all()
         details = " · ".join(f"{name}: {count}" for name, count in counts.items())
         await message.reply_text(f"<b>DATABASE RESET COMPLETE</b>\n\nDeleted records — {details}")
         await audit(bot, settings, f"Full database reset by owner <code>{message.from_user.id}</code>: {details}")
+
+    @bot.on_callback_query(filters.regex(r"^reset:(all|all_confirm|user|cancel)$"))
+    async def reset_menu_handler(_: Client, query: CallbackQuery) -> None:
+        if not _is_private(query.message) or not _is_owner(query.from_user.id, settings):
+            await query.answer("Owner access required in private chat.", show_alert=True)
+            return
+        action = query.data.split(":")[1]
+        if action == "cancel":
+            await query.answer("Reset cancelled.")
+            await query.message.edit_text("No data was changed.")
+        elif action == "all":
+            await query.answer()
+            await query.message.edit_text(
+                "<b>⚠️ CONFIRM FULL DATABASE RESET</b>\n\n"
+                "This deletes all users, cards, templates, competitions, matches, challenges, moderators, shop purchases, and saved shop prices.",
+                reply_markup=_reset_all_confirm_keyboard(),
+            )
+        elif action == "all_confirm":
+            counts = await database.reset_all()
+            details = " · ".join(f"{name}: {count}" for name, count in counts.items())
+            await query.answer("Database reset complete.")
+            await query.message.edit_text(f"<b>DATABASE RESET COMPLETE</b>\n\nDeleted records — {details}")
+            await audit(bot, settings, f"Full database reset by owner <code>{query.from_user.id}</code>: {details}")
+        else:
+            await query.answer()
+            await query.message.edit_text(
+                "<b>👤 RESET ONE USER</b>\n\n"
+                "This clears that manager's coins, glory, XP, cards, squad, cooldowns, team settings, and match record.\n"
+                "The account identity stays in place.\n\n"
+                "Use <code>/resetuser USER_ID CONFIRM</code>, or reply to their message with <code>/resetuser CONFIRM</code>."
+            )
+
+    @bot.on_message(filters.command("resetuser"))
+    async def reset_user_handler(_: Client, message: Message) -> None:
+        if not _owner_private(message, settings):
+            await message.reply_text("This command is owner-only in private chat.")
+            return
+        raw_parts = message.text.partition(" ")[2].strip().split()
+        target = message.reply_to_message.from_user if message.reply_to_message else None
+        confirmation = "CONFIRM" in {part.upper() for part in raw_parts}
+        try:
+            target_id = target.id if target else int(next(part for part in raw_parts if part.upper() != "CONFIRM"))
+        except (ValueError, StopIteration):
+            await message.reply_text(
+                "Use <code>/resetuser USER_ID CONFIRM</code>, or reply to the user's message with <code>/resetuser CONFIRM</code>."
+            )
+            return
+        if not confirmation:
+            await message.reply_text(
+                f"This will permanently clear user <code>{target_id}</code>'s cards and game stats. "
+                f"Send <code>/resetuser {target_id} CONFIRM</code> to continue."
+            )
+            return
+        if not await database.reset_user_stats(target_id):
+            await message.reply_text("That user does not have a saved account.")
+            return
+        await message.reply_text(f"✅ User <code>{target_id}</code> stats and collection were reset.")
+        await audit(bot, settings, f"User stats reset by owner <code>{message.from_user.id}</code>: <code>{target_id}</code>")
 
     @bot.on_message(filters.command("admin"))
     async def admin_handler(_: Client, message: Message) -> None:
@@ -256,14 +342,14 @@ Use owner tools in this private chat. Arena and challenge commands belong in gro
 /addplayer · /addplayers
 
 <b>Level 2 · Templates and arena data</b>
-/addtemplate · /templates · /templateguide
+/addtemplate · /template · /templates · /templateguide
 /addcompetition · /addteam · /editteam · /deleteteam
 
 <b>Access controls</b>
 /mods (owner and moderators)
 
 <b>Owner-only</b>
-/addmod · /removemod · /resetall · /tplayer · /botinfo
+/addmod · /removemod · /resetall · /resetuser · /tplayer · /editionplayer · /botinfo
 
 Keep the player database and card artwork separate so new card templates can be added safely later.""",
         )
@@ -280,7 +366,7 @@ Keep the player database and card artwork separate so new card templates can be 
 
     @bot.on_message(filters.command("players"))
     async def players_handler(_: Client, message: Message) -> None:
-        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 1):
+        if not (_is_private(message) or _is_group_chat(message)) or not await _has_level(message.from_user.id, database, settings, 1):
             return
         raw_page = message.text.partition(" ")[2].strip()
         try:
@@ -292,7 +378,7 @@ Keep the player database and card artwork separate so new card templates can be 
 
     @bot.on_callback_query(filters.regex(r"^adminplayers:[0-9]+$"))
     async def player_database_page_handler(_: Client, query: CallbackQuery) -> None:
-        if not _is_private(query.message) or not await _has_level(query.from_user.id, database, settings, 1):
+        if not (_is_private(query.message) or _is_group_chat(query.message)) or not await _has_level(query.from_user.id, database, settings, 1):
             await query.answer("Administrator access required.", show_alert=True)
             return
         try:
@@ -506,18 +592,21 @@ Keep the player database and card artwork separate so new card templates can be 
         if not _owner_private(message, settings):
             return
         reply = message.reply_to_message
-        name = message.text.partition(" ")[2].strip()
+        raw_name = message.text.partition(" ")[2].strip()
+        name, separator, edition = raw_name.partition("|")
+        name = name.strip()
+        edition = edition.strip().upper() if separator and edition.strip() else "SPECIAL"
         if not reply or not reply.photo or not name:
-            await message.reply_text("Reply to a finished card image with <code>/tplayer Player Name</code>.")
+            await message.reply_text("Reply to a finished card image with <code>/tplayer Player Name | POTW</code>.")
             return
         player = {
             "player_id": f"photo-{uuid4().hex[:10]}",
             "name": name[:60],
             "nation": "🌐",
-            "club": "Special Edition",
+            "club": edition,
             "position": "ST",
             "secondary_positions": ["CF", "ATT"],
-            "rarity": "ICONIC",
+            "edition": edition,
             "ovr": 99,
             "pace": 99,
             "shooting": 99,
@@ -529,12 +618,69 @@ Keep the player database and card artwork separate so new card templates can be 
             "weak_foot": 5,
             "skill_moves": 5,
             "height": "",
-            "traits": ["Special Edition"],
+            "traits": [f"{edition} Edition"],
             "card_photo_file_id": reply.photo.file_id,
             "created_by": message.from_user.id,
         }
         await database.add_player(player)
-        await message.reply_text(f"Photo card <b>{name}</b> added. It will be delivered as the original image without rendering.")
+        await message.reply_text(
+            f"Photo card <b>{name}</b> added as <b>{edition}</b>. "
+            "It will be delivered as the original image without rendering."
+        )
+
+    @bot.on_message(filters.command("editionplayer"))
+    async def edition_player_handler(_: Client, message: Message) -> None:
+        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 2):
+            await message.reply_text("Level 2 moderator or owner access is required to add edition cards.")
+            return
+        parts = [part.strip() for part in message.text.partition(" ")[2].split("|")]
+        if len(parts) != 17:
+            await message.reply_text(
+                "<b>Edition player format</b>\n\n"
+                "<code>/editionplayer Name | Nation | Club | Position | Edition | OVR | PAC | SHO | PAS | DRI | DEF | PHY | Foot | Weak foot | Skill moves | Height | Traits</code>\n\n"
+                "Example edition names: POTW, POTY, TOTY, UCL TOTY."
+            )
+            return
+        try:
+            player = {
+                "player_id": f"edition-{uuid4().hex[:10]}",
+                "name": parts[0][:60],
+                "nation": parts[1] or "🌐",
+                "club": parts[2] or "Special Edition",
+                "position": parts[3].upper(),
+                "edition": parts[4].upper(),
+                "ovr": int(parts[5]),
+                "pace": int(parts[6]),
+                "shooting": int(parts[7]),
+                "passing": int(parts[8]),
+                "dribbling": int(parts[9]),
+                "defending": int(parts[10]),
+                "physical": int(parts[11]),
+                "preferred_foot": parts[12] or "Right",
+                "weak_foot": int(parts[13]),
+                "skill_moves": int(parts[14]),
+                "height": parts[15],
+                "traits": [item.strip() for item in parts[16].split(",") if item.strip()],
+                "claimable": True,
+                "card_type": "limited",
+                "created_by": message.from_user.id,
+            }
+        except ValueError:
+            await message.reply_text("OVR and all six stats must be whole numbers.")
+            return
+        if not player["name"] or not player["edition"]:
+            await message.reply_text("A player name and edition name are required.")
+            return
+        await database.add_player(player)
+        await message.reply_text(
+            f"✅ <b>{player['name']}</b> added as the limited edition <b>{player['edition']}</b> card. "
+            "This card intentionally has no rarity."
+        )
+        await audit(
+            bot,
+            settings,
+            f"Edition player added: <b>{player['name']}</b> ({player['edition']}) by <code>{message.from_user.id}</code>",
+        )
 
     @bot.on_message(filters.command("testms"))
     async def test_match_summary_handler(_: Client, message: Message) -> None:
@@ -673,6 +819,13 @@ Keep all text inside x=40..1240 and y=35..615. Use a 16:9 or 2:1 export consiste
 Reply to the finished image with:
 <code>/addtemplate gk-wide | GK | RARE | Widescreen 2:1</code>
 
+<b>Limited and special editions</b>
+Use <code>/template ID | POSITION | EDITION | VERSION</code> for editions such as
+<code>POTW</code>, <code>POTY</code>, <code>TOTY</code>, or <code>UCL TOTY</code>.
+These templates and player cards use an edition label instead of a rarity.
+Add a text-based edition card with <code>/editionplayer</code>, or add an original image with
+<code>/tplayer Player Name | EDITION</code>.
+
 <b>Bulk player template</b>
 Use one player per line. Each line has exactly 18 pipe-separated fields:
 <code>Name | Nation | Club | Position | Secondary positions | Rarity | OVR | PAC | SHO | PAS | DRI | DEF | PHY | Foot | Weak foot | Skill moves | Height | Traits</code>
@@ -736,6 +889,54 @@ Example:
         await message.reply_text(f"Template <b>{template['template_id']}</b> saved.")
         await audit(bot, settings, f"Template added: <b>{template['template_id']}</b> by <code>{message.from_user.id}</code>")
 
+    @bot.on_message(filters.command("template"))
+    async def special_template_handler(_: Client, message: Message) -> None:
+        if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 2):
+            await message.reply_text("Level 2 moderator or owner access is required to add templates.")
+            return
+        reply = message.reply_to_message
+        if not reply or not reply.photo:
+            await message.reply_text(
+                "Reply to a card image and use <code>/template ID | POSITION | EDITION | VERSION</code>."
+            )
+            return
+        parts = [part.strip() for part in message.text.partition(" ")[2].split("|")]
+        if len(parts) == 3:
+            parts.insert(1, "ALL")
+        if len(parts) < 4 or not parts[0] or not parts[2]:
+            await message.reply_text(
+                "Use <code>/template ID | POSITION | EDITION | VERSION</code> — for example "
+                "<code>/template potw-st | ST | POTW | Limited 2:1</code>."
+            )
+            return
+        edition = parts[2].upper()
+        source_width = int(getattr(reply.photo, "width", 1280) or 1280)
+        source_height = int(getattr(reply.photo, "height", 640) or 640)
+        is_widescreen = "wide" in parts[3].lower() or "2:1" in parts[3] or "16:9" in parts[3]
+        template = {
+            "template_id": parts[0],
+            "position": parts[1].upper(),
+            "edition": edition,
+            "version": parts[3],
+            "aspect_ratio": f"{source_width}:{source_height}" if is_widescreen else "3:4",
+            "canvas": {"width": source_width, "height": source_height} if is_widescreen else {"width": 720, "height": 960},
+            "image_file_id": reply.photo.file_id,
+            "layout": {
+                "rating": "top-left",
+                "nation": "top-right",
+                "portrait": "center",
+                "identity": "lower-center",
+                "stats": "bottom",
+                "traits": "bottom-strip",
+            },
+            "created_by": message.from_user.id,
+        }
+        await database.save_template(template)
+        await message.reply_text(
+            f"✅ Limited/special template <b>{template['template_id']}</b> saved for <b>{edition}</b> cards."
+        )
+        await audit(bot, settings, f"Edition template added: <b>{template['template_id']}</b> ({edition}) by <code>{message.from_user.id}</code>")
+
     @bot.on_message(filters.command("templates"))
     async def templates_handler(_: Client, message: Message) -> None:
         if not _is_private(message) or not await _has_level(message.from_user.id, database, settings, 1):
@@ -745,5 +946,9 @@ Example:
             await message.reply_text("No card templates saved yet. Use /templateguide.")
             return
         lines = ["<b>CARD TEMPLATES</b>"]
-        lines.extend(f"• <b>{item['template_id']}</b> · {item['rarity']} · {item['version']}" for item in templates)
+        lines.extend(
+            f"• <b>{item['template_id']}</b> · "
+            f"{item.get('edition') or item.get('rarity', 'UNSPECIFIED')} · {item['version']}"
+            for item in templates
+        )
         await message.reply_text("\n".join(lines))

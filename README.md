@@ -8,17 +8,20 @@ An advanced Kurigram Telegram football manager and card game. The bot uses **Fʟ
 - Native Kurigram colored inline buttons with separate Club, Arena, Help, Support, and Developer destinations
 - `/collection`, `/squad`, and `/profile`
 - Fuzzy `/player Name` card search with aliases, typo tolerance, and next/back pagination
+- Quantity-based `/shop` with rarity-first navigation, live MongoDB prices, and ×1/×2/×3 pack purchases
+- Challenge winners receive an additional 30–120 coin reward, while the existing participation reward remains
 - Owner-created group competitions for `/playcl`, `/playwc`, `/playacl`, and custom commands such as `/playcwc`
 - UCL uses fixed club squads, World Cup uses fixed national squads, and ACL uses fixed Asian club squads; these opponents are never taken from another user's collection
-- Owner/admin player management through `/admin`, `/addplayer`, `/addplayers`, and paginated `/players`
+- Owner/admin player management through `/admin`, `/addplayer`, `/addplayers`, and paginated `/players` in private chat or groups
 - Owner-only `/botinfo` statistics and level 1/2 moderator permissions through `/addmod`
 - Seeded UCL, WC, and ACL mode catalogues with five named teams and competition-only rosters
 - Owner-created competitions and teams through `/addcompetition`, `/addteam`, `/editteam`, and `/deleteteam`
 - Manager team controls through `/team`, `/formation`, `/teamname`, `/subs`, and `/instruction`
 - Live player challenges with tactics, mentality, player instructions, substitutions, commentator updates, extra time, and penalties
-- Owner-only positional templates and `/tplayer` original-image special edition cards
+- Owner/admin positional templates plus `/template` limited-edition templates for POTW, POTY, TOTY, and UCL TOTY
+- Limited-edition player cards without a rarity through `/editionplayer`; original-image editions through `/tplayer Player Name | EDITION`
 - Scoped command menus: arena/challenge commands appear for groups, owner controls appear in the owner's private chat
-- A protected `/resetall CONFIRM` command for a deliberate full database reset
+- Protected reset controls: `/resetall CONFIRM` for the full database, or `/resetuser USER_ID CONFIRM` for one manager's stats and collection
 - A small health app in `app.py` running beside the Telegram client
 - Dockerfile and Docker Compose with MongoDB persistence
 
@@ -47,7 +50,7 @@ Add your Telegram numeric ID to `OWNER_IDS` to unlock the owner controls. Owners
 
 Use `/addmod USER_ID 1` or `/addmod USER_ID 2`. `/botinfo` is owner-only.
 
-The owner command menu is private-chat only. `/arena`, `/playcl`, `/playwc`, `/playacl`, custom `/play...` modes, and `/challenge` are group-only. `/players` is a private owner/admin command and is not treated as a `/play...` mode.
+The owner command menu is private-chat only. `/arena`, `/playcl`, `/playucl`, `/playwc`, `/playacl`, custom `/play...` modes, and `/challenge` are group-only. `/players` is available to level 1+ owners/moderators in private chat or groups and is not treated as a `/play...` mode.
 
 ## Run with Docker
 
@@ -76,6 +79,19 @@ Use `/arena` in a group to choose an owner-created competition. Each group has o
 /addteam competition_key | team-key | Team name | Rating | Emoji | Player names
 ```
 
+## Card shop
+
+Open `/shop` in a private chat, select a pack rarity, then choose ×1, ×2, or ×3.
+The Common Pack starts at **1,500 coins**. Owners can view or change saved prices with:
+
+```text
+/shopprice
+/shopprice COMMON | 1500
+```
+
+Price changes are stored in MongoDB and reflected in the shop immediately. Duplicate cards from
+a purchase are converted into coin credit rather than being added twice.
+
 ## Widescreen card templates
 
 The card renderer preserves uploaded template aspect ratios. For a red/black stadium design, export a **16:9 or 1280 × 640 (2:1)** PNG and keep these safe zones:
@@ -86,6 +102,16 @@ The card renderer preserves uploaded template aspect ratios. For a red/black sta
 - Stats at `(54, 590)`, `(214, 590)`, `(374, 590)`, `(760, 590)`, `(920, 590)`, `(1080, 590)`
 
 Reply to the uploaded image with `/addtemplate gk-wide | GK | RARE | Widescreen 2:1`. Use the same canvas for CB, MID, and ATT, moving visual emphasis to DEF, PAS/DRI, and SHO/PAC respectively. `/templateguide` contains the full coordinate guide.
+
+For non-rarity editions, reply to the image with:
+
+```text
+/template potw-st | ST | POTW | Limited 2:1
+/template ucl-toty-cam | CAM | UCL TOTY | Limited 2:1
+```
+
+Add a limited-edition player without a rarity using `/editionplayer` and its 17-field format
+shown by the command. The card displays its edition label instead of a rarity.
 
 Recommended position template IDs are `GK`, `CB`, `LB`, `RB`, `LWB`, `RWB`, `CDM`, `CM`, `CAM`, `LM`, `RM`, `LW`, `RW`, `CF`, `ST`, and `SS`. `DEF`, `MID`, `ATT`, and `ALL` can be used as fallbacks. Uploaded 16:9 and 2:1 artwork keeps its original aspect ratio while using the same safe-zone coordinates.
 
