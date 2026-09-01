@@ -20,6 +20,7 @@ An advanced Kurigram Telegram football manager and card game. The bot uses **Fʟ
 - Live player challenges with tactics, mentality, player instructions, substitutions, commentator updates, extra time, and penalties
 - Owner/admin positional templates plus `/template` limited-edition templates for POTW, POTY, TOTY, and UCL TOTY
 - Limited-edition player cards without a rarity through `/editionplayer`; original-image editions through `/tplayer Player Name | EDITION`
+- `ICONIC` rarity for retired-player cards, with separate Iconic templates
 - Scoped command menus: arena/challenge commands appear for groups, owner controls appear in the owner's private chat
 - Protected reset controls: `/resetall CONFIRM` for the full database, or `/resetuser USER_ID CONFIRM` for one manager's stats and collection
 - A small health app in `app.py` running beside the Telegram client
@@ -50,7 +51,7 @@ Add your Telegram numeric ID to `OWNER_IDS` to unlock the owner controls. Owners
 
 Use `/addmod USER_ID 1` or `/addmod USER_ID 2`. `/botinfo` is owner-only.
 
-The owner command menu is private-chat only. `/arena`, `/playcl`, `/playucl`, `/playwc`, `/playacl`, custom `/play...` modes, and `/challenge` are group-only. `/players` is available to level 1+ owners/moderators in private chat or groups and is not treated as a `/play...` mode.
+The owner command menu is private-chat only. `/arena`, `/playcl`, `/playucl`, `/playwc`, `/playacl`, custom `/play...` modes, and `/challenge` are group-only. `/players` is available to everyone in private chat or groups and is not treated as a `/play...` mode.
 
 ## Run with Docker
 
@@ -101,7 +102,7 @@ The card renderer preserves uploaded template aspect ratios. For a red/black sta
 - Name center `(650, 506)`, identity center `(650, 550)`
 - Stats at `(54, 590)`, `(214, 590)`, `(374, 590)`, `(760, 590)`, `(920, 590)`, `(1080, 590)`
 
-Reply to the uploaded image with `/addtemplate gk-wide | GK | RARE | Widescreen 2:1`. Use the same canvas for CB, MID, and ATT, moving visual emphasis to DEF, PAS/DRI, and SHO/PAC respectively. `/templateguide` contains the full coordinate guide.
+Reply to the uploaded image with `/addtemplate gk-wide | GK | RARE | Widescreen 2:1`. Use the same canvas for CB, MID, and ATT, moving visual emphasis to DEF, PAS/DRI, and SHO/PAC respectively. Use `ICONIC` as the rarity for retired players and save a separate Iconic design. `/templateguide` contains the full coordinate guide.
 
 For non-rarity editions, reply to the image with:
 

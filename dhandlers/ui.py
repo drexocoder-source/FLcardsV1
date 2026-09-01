@@ -39,7 +39,6 @@ def shop_keyboard(packs: dict | None = None) -> InlineKeyboardMarkup:
         ]
         for index in range(0, len(pack_items), 2)
     ]
-    rows.append([InlineKeyboardButton("🏠 Home", callback_data="menu:home", style=ButtonStyle.PRIMARY)])
     return InlineKeyboardMarkup(rows)
 
 
@@ -66,7 +65,6 @@ def shop_pack_keyboard(pack_key: str, pack: dict) -> InlineKeyboardMarkup:
                 for quantity in (1, 2, 3)
             ],
             [InlineKeyboardButton("↩️ Choose rarity", callback_data="shop:back", style=ButtonStyle.PRIMARY)],
-            [InlineKeyboardButton("🏠 Home", callback_data="menu:home", style=ButtonStyle.PRIMARY)],
         ]
     )
 

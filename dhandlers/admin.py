@@ -93,10 +93,12 @@ async def _player_database_page(database: MongoDatabase, page: int, page_size: i
         lines.append("No player cards have been added yet.")
     else:
         for index, player in enumerate(players, page * page_size + 1):
+            edition = str(player.get("edition", "")).strip()
+            card_type = f"Edition {edition}" if edition else f"Rarity {player.get('rarity', 'COMMON')}"
             lines.append(
                 f"{index}. <b>{html.escape(str(player.get('name', 'Unknown')))}</b>"
                 f" · {html.escape(str(player.get('club', 'Free Agent')))}"
-                f" · {player.get('position', 'MID')} · OVR {player.get('ovr', 0)}"
+                f" · {player.get('position', 'MID')} · OVR {player.get('ovr', 0)} · {html.escape(card_type)}"
             )
     lines.extend(["", "Competition-only mode rosters are hidden from this browser."])
     return "\n".join(lines), page
@@ -366,7 +368,7 @@ Keep the player database and card artwork separate so new card templates can be 
 
     @bot.on_message(filters.command("players"))
     async def players_handler(_: Client, message: Message) -> None:
-        if not (_is_private(message) or _is_group_chat(message)) or not await _has_level(message.from_user.id, database, settings, 1):
+        if not (_is_private(message) or _is_group_chat(message)):
             return
         raw_page = message.text.partition(" ")[2].strip()
         try:
@@ -378,8 +380,8 @@ Keep the player database and card artwork separate so new card templates can be 
 
     @bot.on_callback_query(filters.regex(r"^adminplayers:[0-9]+$"))
     async def player_database_page_handler(_: Client, query: CallbackQuery) -> None:
-        if not (_is_private(query.message) or _is_group_chat(query.message)) or not await _has_level(query.from_user.id, database, settings, 1):
-            await query.answer("Administrator access required.", show_alert=True)
+        if not (_is_private(query.message) or _is_group_chat(query.message)):
+            await query.answer("This browser is unavailable in this chat.", show_alert=True)
             return
         try:
             requested_page = int(query.data.split(":", 1)[1])
@@ -815,6 +817,11 @@ For CB, LB, and RB, use the same canvas and portrait zone, with DEF as the visua
 
 <b>Safe zones</b>
 Keep all text inside x=40..1240 and y=35..615. Use a 16:9 or 2:1 export consistently; this bot preserves a widescreen template's aspect ratio.
+
+<b>Rarity</b>
+Use <code>COMMON, RARE, EPIC, ELITE, LEGENDARY</code>, or <code>ICONIC</code>.
+Use <code>ICONIC</code> for retired-player cards and save a separate Iconic design with
+<code>/addtemplate ID | POSITION | ICONIC | VERSION</code>.
 
 Reply to the finished image with:
 <code>/addtemplate gk-wide | GK | RARE | Widescreen 2:1</code>

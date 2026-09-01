@@ -30,6 +30,7 @@ from .ui import (
 _TEMPLATE_CACHE_DIR = Path("/tmp/fl-card-templates")
 _TEMPLATE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _TEMPLATE_DOWNLOAD_LOCK = asyncio.Lock()
+MAX_PLAYER_SEARCH_RESULTS = 24
 
 FORMATIONS = {
     "4-3-3": 1,
@@ -94,7 +95,7 @@ def card_text(player: dict, claimed_by: str | None = None) -> str:
 
 
 def _search_token(query: str) -> str:
-    compact = query.strip()[:48]
+    compact = query.strip()[:32]
     return base64.urlsafe_b64encode(compact.encode()).decode().rstrip("=")
 
 
@@ -103,15 +104,50 @@ def _search_query(token: str) -> str:
     return base64.urlsafe_b64decode(padded.encode()).decode()
 
 
-def _player_page_keyboard(token: str, page: int, total: int) -> InlineKeyboardMarkup | None:
-    buttons = []
-    if page > 0:
-        buttons.append(InlineKeyboardButton("⬅️ Back", callback_data=f"playerpage:{token}:{page - 1}"))
-    if page + 1 < total:
-        buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"playerpage:{token}:{page + 1}"))
-    rows = [buttons] if buttons else []
-    rows.append([shop_button(), InlineKeyboardButton("🏠 Home", callback_data="menu:home", style=ButtonStyle.PRIMARY)])
+def _card_type_text(player: dict) -> str:
+    edition = str(player.get("edition", "")).strip()
+    rarity = str(player.get("rarity", "")).strip()
+    if edition and rarity:
+        return f"Rarity {rarity} · Edition {edition}"
+    if edition:
+        return f"Edition {edition}"
+    return f"Rarity {rarity or 'COMMON'}"
+
+
+def _player_search_text(query: str, results: list[dict]) -> str:
+    lines = [
+        "<b>PLAYER SEARCH</b>",
+        f"Matches for: <b>{html.escape(query)}</b>",
+        "",
+    ]
+    for index, player in enumerate(results, 1):
+        lines.append(
+            f"{index}. <b>{html.escape(str(player.get('name', 'Unknown')))}</b>"
+            f" · {html.escape(str(player.get('club', 'Free Agent')))}"
+            f" · OVR <b>{player.get('ovr', 0)}</b>"
+            f" · {html.escape(_card_type_text(player))}"
+        )
+    lines.extend(["", "Tap a card below to open its full card."])
+    return "\n".join(lines)
+
+
+def _player_results_keyboard(token: str, results: list[dict]) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(
+            f"{index} · {str(player.get('name', 'Unknown'))[:28]}",
+            callback_data=f"playercard:{token}:{index - 1}",
+            style=ButtonStyle.PRIMARY,
+        )
+        for index, player in enumerate(results, 1)
+    ]
+    rows = [buttons[index : index + 2] for index in range(0, len(buttons), 2)]
     return InlineKeyboardMarkup(rows)
+
+
+def _player_card_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("↩️ Search results", callback_data=f"playerresults:{token}", style=ButtonStyle.PRIMARY)]]
+    )
 
 
 def _player_caption(player: dict, query: str, page: int, total: int) -> str:
@@ -430,14 +466,11 @@ Choose what happens to this card:"""
                 f"No added card matching <b>{html.escape(search)}</b> was found.",
             )
             return
+        results = results[:MAX_PLAYER_SEARCH_RESULTS]
         token = _search_token(search)
-        await _send_card(
-            bot,
-            database,
-            message,
-            results[0],
-            caption=_player_caption(results[0], search, 0, len(results)),
-            reply_markup=_player_page_keyboard(token, 0, len(results)),
+        await message.reply_text(
+            _player_search_text(search, results),
+            reply_markup=_player_results_keyboard(token, results),
         )
 
     @bot.on_message(filters.command("squad"))
@@ -606,8 +639,8 @@ Choose what happens to this card:""",
         except Exception:
             await query.message.edit_text(text)
 
-    @bot.on_callback_query(filters.regex(r"^playerpage:[A-Za-z0-9_-]+:[0-9]+$"))
-    async def player_page_handler(_: Client, query: CallbackQuery) -> None:
+    @bot.on_callback_query(filters.regex(r"^playercard:[A-Za-z0-9_-]+:[0-9]+$"))
+    async def player_card_handler(_: Client, query: CallbackQuery) -> None:
         _, token, page_text = query.data.split(":")
         try:
             search = _search_query(token)
@@ -631,5 +664,27 @@ Choose what happens to this card:""",
             query.message,
             player,
             caption=_player_caption(player, search, page, len(results)),
-            reply_markup=_player_page_keyboard(token, page, len(results)),
+            reply_markup=_player_card_keyboard(token),
+        )
+
+    @bot.on_callback_query(filters.regex(r"^playerresults:[A-Za-z0-9_-]+$"))
+    async def player_results_handler(_: Client, query: CallbackQuery) -> None:
+        token = query.data.split(":", 1)[1]
+        try:
+            search = _search_query(token)
+        except (ValueError, UnicodeDecodeError, binascii.Error):
+            await query.answer("That search has expired.", show_alert=True)
+            return
+        results = await database.search_players(search)
+        if not results:
+            await query.answer("That search has expired.", show_alert=True)
+            return
+        await query.answer()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await query.message.reply_text(
+            _player_search_text(search, results),
+            reply_markup=_player_results_keyboard(token, results),
         )
